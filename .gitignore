@@ -1,0 +1,55 @@
+# --------------------------------------------------------------- secrets ---
+.env
+.env.local
+.env.*.local
+!.env.example
+*.pem
+*.key
+# OAuth token stores must never be committed.
+credentials.json
+token.json
+
+# ---------------------------------------------------------------- python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+build/
+dist/
+
+# ------------------------------------------------------------------ node ---
+node_modules/
+.next/
+out/
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+*.tsbuildinfo
+next-env.d.ts
+
+# ----------------------------------------------------------------- media ---
+# Renders are reproducible from the database; source assets and published
+# masters are not, so back those up separately (README: Known limitations).
+#
+# Ignore contents (trailing /*), not the directories themselves — git cannot
+# re-include a file via negation if a parent directory is excluded outright,
+# so `media/renders/` + `!media/**/.gitkeep` silently drops the .gitkeep too.
+media/renders/*
+media/cache/*
+media/assets/*
+!media/renders/.gitkeep
+!media/cache/.gitkeep
+!media/assets/.gitkeep
+
+# ------------------------------------------------------------------- misc ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log

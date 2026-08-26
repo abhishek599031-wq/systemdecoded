@@ -1,0 +1,140 @@
+# SystemDecoded — local development stack.
+#
+# Topology is identical in production (ARCH §15.1); only TLS, the OAuth
+# redirect URI and resource limits differ. No Redis and no message broker:
+# the job queue lives in PostgreSQL (ADR 0001).
+#
+#   docker compose up --build
+#
+# Services: postgres -> migrate (runs once) -> backend | worker | scheduler, plus frontend.
+
+name: systemdecoded
+
+x-backend-env: &backend-env
+  DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://systemdecoded:systemdecoded@postgres:5432/systemdecoded}
+  ENVIRONMENT: ${ENVIRONMENT:-development}
+  DEBUG: ${DEBUG:-true}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  LOG_FORMAT: ${LOG_FORMAT:-console}
+  MEDIA_ROOT: /media
+  SECRETS_KEY: ${SECRETS_KEY:-}
+  YOUTUBE_API_ENABLED: ${YOUTUBE_API_ENABLED:-false}
+  GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+  GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+  GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-http://localhost:8080/api/v1/youtube/oauth/callback}
+  GOOGLE_CONSENT_PUBLISHING_STATUS: ${GOOGLE_CONSENT_PUBLISHING_STATUS:-testing}
+  FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3030}
+  OAUTH_REFRESH_SKEW_SECONDS: ${OAUTH_REFRESH_SKEW_SECONDS:-600}
+  CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+
+x-backend-base: &backend-base
+  build:
+    context: ./backend
+  image: systemdecoded-backend:dev
+  volumes:
+    - ./backend:/app
+    - ./media:/media
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+  restart: unless-stopped
+
+services:
+  # --------------------------------------------------------------- database ---
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-systemdecoded}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-systemdecoded}
+      POSTGRES_DB: ${POSTGRES_DB:-systemdecoded}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-systemdecoded} -d ${POSTGRES_DB:-systemdecoded}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # -------------------------------------------------------------- migration ---
+  # Runs once and exits. Everything else waits for it to succeed, so no two
+  # processes ever race to apply the same migration.
+  migrate:
+    build:
+      context: ./backend
+    image: systemdecoded-backend:dev
+    command: ["alembic", "upgrade", "head"]
+    environment: *backend-env
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # -------------------------------------------------------------------- api ---
+  backend:
+    <<: *backend-base
+    command:
+      ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    environment: *backend-env
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+
+  # ----------------------------------------------------------------- worker ---
+  worker:
+    <<: *backend-base
+    command: ["python", "-m", "app.jobs.worker"]
+    environment:
+      <<: *backend-env
+      WORKER_ID: ${WORKER_ID:-worker-1}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+      WORKER_JOB_TYPES: ${WORKER_JOB_TYPES:-}
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'app.jobs.worker' > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # -------------------------------------------------------------- scheduler ---
+  scheduler:
+    <<: *backend-base
+    command: ["python", "-m", "app.jobs.scheduler"]
+    environment:
+      <<: *backend-env
+      SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-true}
+      SCHEDULER_TIMEZONE: ${SCHEDULER_TIMEZONE:-UTC}
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'app.jobs.scheduler' > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # --------------------------------------------------------------- frontend ---
+  frontend:
+    build:
+      context: ./frontend
+    image: systemdecoded-frontend:dev
+    command: ["npm", "run", "dev"]
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      WATCHPACK_POLLING: "true"
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+      - frontend_next:/app/.next
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  frontend_node_modules:
+  frontend_next:
