@@ -74,6 +74,27 @@ class Settings(BaseSettings):
 
     # -------------------------------------------------------------- media ---
     MEDIA_ROOT: Path = Path("/media")
+    SCENE_TEMPLATES_DIR: Path = Path("/scene_templates")
+
+    # ---------------------------------------------------- production (phase 2) ---
+    TTS_VOICE: str = "am_puck"
+    TTS_SPEED: float = Field(default=0.92, gt=0.4, le=2.0)
+    TTS_LANG: str = "en-us"
+    ALIGNMENT_MODEL: str = "base.en"
+
+    VIDEO_WIDTH: int = 1080
+    VIDEO_HEIGHT: int = 1920
+    VIDEO_FPS: int = Field(default=30, ge=24, le=60)
+    VIDEO_TARGET_LUFS: float = -14.0
+
+    # Picture holds on the resolved final frame after narration ends, so the
+    # video reads as finished rather than cut off.
+    END_HOLD_SECONDS: float = Field(default=1.0, ge=0.0, le=3.0)
+
+    # Shorts duration band. QC fails a render outside it rather than shipping
+    # something the format will not reward.
+    TARGET_DURATION_MIN_SECONDS: float = 20.0
+    TARGET_DURATION_MAX_SECONDS: float = 45.0
 
     # ------------------------------------------------------------ secrets ---
     # Used to encrypt OAuth tokens at rest (Phase 1). Required in production.

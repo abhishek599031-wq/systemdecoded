@@ -4,11 +4,13 @@
 
 An autonomous YouTube content operations system for a technology edutainment channel.
 
-**Current status: Phase 1 — YouTube connection. Complete.**
-The stack runs end to end: PostgreSQL, migrations, FastAPI, a Postgres-backed job
-queue, a worker, a scheduler, and a Next.js studio UI — plus YouTube OAuth with
-encrypted token storage, automatic channel sync and scheduled token refresh.
-No content pipeline yet — that is Phase 2.
+**Current status: Phase 2 — Content production. Complete.**
+The system produces a finished, review-ready YouTube Short end to end: script →
+local TTS narration → timings measured from that audio → word-aligned captions →
+scene visuals rendered from HTML templates → FFmpeg composition → automated quality
+gates → human review → publishing handoff. Plus everything from Phases 0–1:
+PostgreSQL, migrations, FastAPI, a Postgres-backed job queue, worker, scheduler,
+Next.js studio, and YouTube OAuth with encrypted tokens.
 
 ---
 
@@ -28,6 +30,7 @@ No content pipeline yet — that is Phase 2.
 - [Worker](#worker)
 - [Scheduler](#scheduler)
 - [Job architecture](#job-architecture)
+- [Media production](#media-production)
 - [Testing](#testing)
 - [Implementation status](#implementation-status)
 - [Roadmap](#roadmap)
@@ -164,6 +167,11 @@ the system debuggable.
 | Logging | structlog | Structured, contextvar-bound |
 | YouTube client | **httpx, direct REST** | See [ADR 0002](docs/adr/0002-youtube-client.md) — the official SDK is synchronous |
 | Secrets | cryptography (Fernet) | OAuth tokens encrypted at rest |
+| TTS | Kokoro-82M (`kokoro-onnx`) | Apache-2.0, CPU real-time, no torch |
+| Alignment | faster-whisper `base.en` | Forced alignment for caption timing |
+| Scene rendering | Playwright + Chromium | HTML/CSS/SVG templates driven frame-by-frame via `seek(t)` |
+| Composition | FFmpeg | Composition and encoding only; concat demuxer, clean cuts |
+| Sound design | numpy synthesis | Internally generated, so licensing stays clean |
 | Frontend | Next.js 15, React 19, Tailwind 4 | App Router, server components |
 | Packaging | Docker Compose | Identical topology locally and on a VPS |
 
@@ -188,7 +196,7 @@ framework, any paid AI API. Each exclusion is argued in the architecture documen
 │   ├── pyproject.toml
 │   ├── Dockerfile
 │   ├── alembic.ini
-│   ├── alembic/versions/        # 0001_foundation, 0002_youtube_connection
+│   ├── alembic/versions/        # 0001_foundation … 0003_content_production
 │   ├── app/
 │   │   ├── main.py              # FastAPI app, error handlers, lifespan
 │   │   ├── config.py            # all environment configuration
@@ -343,8 +351,8 @@ alembic upgrade head
 The initial migration seeds one `channel` row (deterministic UUID) so there is no
 startup race and no bootstrap step.
 
-Current head: `0002_youtube_connection` — adds `youtube_connection`, `oauth_state`, and
-YouTube-sourced columns on `channel`.
+Current head: `0003_content_production` — adds the content hierarchy: projects,
+transitions, research, scripts, scenes, assets, renders, quality checks and publishing.
 
 ---
 
@@ -365,6 +373,12 @@ FastAPI on `:8000`. Interactive docs at `/docs`.
 | `POST /api/v1/jobs/{id}/requeue` | Operator retry of a terminal job |
 | `POST /api/v1/jobs/{id}/cancel` | Cancel a queued job |
 | `GET /api/v1/channel` · `PATCH` | Read/update channel settings |
+| `GET /api/v1/projects` | List content projects |
+| `GET /api/v1/projects/{id}` | Full review payload: script, scenes, sources, QC, timeline |
+| `GET /api/v1/projects/{id}/video` | Stream the rendered MP4 |
+| `POST /api/v1/projects/{id}/produce` | Queue a production run |
+| `POST /api/v1/projects/{id}/review` | Approve / request revision / reject |
+| `POST /api/v1/projects/{id}/published` | Link a manually uploaded YouTube video |
 | `GET /api/v1/youtube/status` | Connection status and health. Never returns tokens. |
 | `GET /api/v1/youtube/oauth/start` | Begin OAuth (`?json=true` returns the URL instead of redirecting) |
 | `GET /api/v1/youtube/oauth/callback` | Google's redirect target; bounces back to the studio |
@@ -419,6 +433,9 @@ docker compose logs -f worker
 Claims jobs, runs them with a concurrency limit, heartbeats while they run, and drains
 in-flight work on shutdown. On startup it requeues anything its own worker id left
 `RUNNING` — the signature of a previous crash.
+
+The worker is built from `Dockerfile.worker`, the only image carrying FFmpeg,
+Chromium and the speech models. The API and scheduler stay on the slim image.
 
 Scale by running more worker containers with **distinct `WORKER_ID` values**.
 `WORKER_JOB_TYPES` restricts which types a worker claims, which is how media rendering
@@ -533,6 +550,10 @@ pytest                            # all tests; integration needs PostgreSQL
 pytest -v -k queue                # one area
 pytest --tb=short -q
 
+# The media test needs FFmpeg, Chromium and the speech models, so it runs in
+# the worker container and is skipped everywhere else.
+docker compose exec -e TEST_DATABASE_URL=postgresql+psycopg://systemdecoded:systemdecoded@postgres:5432/systemdecoded_test   worker pytest tests/ -m media
+
 # Integration tests need a database. Either:
 docker compose up -d postgres
 # or point them somewhere else:
@@ -556,6 +577,11 @@ Coverage of the foundation:
 | Recovery | Stale-heartbeat reaping, worker-restart orphan recovery, operator requeue/cancel |
 | Runner | Success, retry-then-succeed, timeouts, missing handlers, **handler writes roll back on failure** |
 | API | Health, status, job CRUD, error envelope shape, channel seed, YouTube honesty |
+| Captions | Chunking on sentences/pauses/limits, ASS structure, per-word highlighting, brace escaping |
+| State machine | No unreachable states, no dead ends, review cannot be skipped, FAILED must be retriaged |
+| Production | Seed integrity, every claim sourced, templates exist, assets declare provenance |
+| Publishing | MANUAL_HANDOFF default, idempotent packages, one live job per project, idempotent reconciliation |
+| **Real render** | **`-m media`: Kokoro + Whisper + Chromium + FFmpeg produce an actual 1080×1920 MP4** |
 
 ---
 
@@ -608,7 +634,7 @@ planner · experiments · insights.
 |---|---|---|
 | **0** ✅ | Foundation | A job runs, retries, times out, and appears in history |
 | **1** ✅ | YouTube connection | Channel connects; metadata auto-populates; token survives refresh |
-| **2** ⭐ | One real video, end to end | **One real Short published on the real channel** |
+| **2** ✅ | One real video, end to end | **One real Short published on the real channel** |
 | **3** | Analytics ingestion | Age-bucketed snapshots landing daily |
 | **4** | LLM-assisted generation | A script produced by the pipeline with one paste step |
 | **5** | Research & quality gates | Every claim traceable to a cited source |
@@ -708,6 +734,196 @@ learning loop remain fully automatic.
 
 ---
 
+## Media production
+
+Phase 2 turns an approved script into a finished, review-ready Short. Every stage
+persists inspectable output, so a bad video can always be traced to the stage that
+caused it.
+
+```mermaid
+graph LR
+    A[Script + scenes] --> B[Segment into clauses<br/>app.services.prosody]
+    B --> C[Kokoro TTS<br/>per segment]
+    C --> D[MEASURE real<br/>audio durations]
+    D --> E[Scene timings]
+    E --> F[faster-whisper<br/>per-scene alignment]
+    F --> G[ASS captions]
+    E --> H[Playwright renders<br/>every frame at 30fps]
+    H --> I[FFmpeg concat<br/>clean cuts]
+    G --> J[Burn captions<br/>+ SFX + loudnorm]
+    I --> J
+    J --> K[1080x1920 MP4]
+    K --> L[Quality gates]
+    L --> M[Human review]
+```
+
+**Step D is the one that matters.** Scene timings are measured from the generated
+audio, never estimated from word counts. Guessing produces drift that compounds
+across a 30-second video and is miserable to debug afterwards.
+
+**Narration is synthesized per clause, not per paragraph.** Feeding a whole scene to
+the model produces identical cadence for every sentence, which is most of what makes
+synthetic narration sound synthetic. `app/services/prosody.py` splits narration into
+spoken units and assigns each a pause by *intent* — clause (~140ms), sentence
+(~280ms), beat (~420ms), reveal (~500ms) — so emphasis lands where the script means
+it to.
+
+### Local dependencies
+
+All of it is free and runs on CPU. None of it lives in the API image — only the
+worker carries the media stack (`backend/Dockerfile.worker`, ~3GB).
+
+| Tool | Role | Notes |
+|---|---|---|
+| **Kokoro-82M** (`kokoro-onnx`) | Narration | Apache-2.0, CPU real-time. `kokoro-onnx` rather than `kokoro` — the latter pulls in torch (~2GB) |
+| **faster-whisper** (`base.en`) | Forced alignment | We know the words; we need their position in audio we generated |
+| **Playwright + Chromium** | Scene rendering | Drives each template's `seek(t)` once per output frame — real motion, not a Ken Burns push |
+| **FFmpeg** | Composition, captions, audio | Composition and encoding only — visual design lives in the templates |
+| **Internally generated SFX** | Sound design | Synthesised with numpy (`app/services/sfx.py`); no third-party audio, so licensing stays trivially clean |
+
+Model weights are **not** baked into the image. They download once into
+`media/cache/models/` (a persisted volume) on first run, so the image stays lean and
+changing a model needs no rebuild. First production run therefore takes ~2 minutes
+longer than later ones.
+
+```bash
+docker compose build worker      # ~3GB, only needed when deps change
+docker compose up -d worker
+```
+
+### Scene templates
+
+`scene_templates/` is the channel's visual identity and sits at the repo root
+rather than inside `backend/`, because it is a design asset iterated in a browser.
+It is mounted into the container, so editing a template needs **no rebuild** — just
+re-run production.
+
+```
+scene_templates/
+├── _base/
+│   ├── tokens.css     # the design system: palette, type scale, safe area
+│   ├── scene.js       # props loading + deterministic seek(t)
+│   └── fonts/         # Inter, bundled locally (no network at render time)
+├── code_reveal/       # a single focal object — hooks and payoffs
+├── diagram_flow/      # A → B → C chains; links can be marked `blocked`
+└── parallel_compute/  # two independent columns reaching the same answer
+```
+
+**Preview any template in a browser** — this is the whole point of the HTML approach:
+
+```
+scene_templates/code_reveal/index.html?safe=1&t=1
+```
+
+- `?t=0..1` places the scene at a point in its reveal (the same function the renderer drives)
+- `?safe=1` outlines the Shorts safe area
+- `?props=<base64-json>` injects real props; with none, each template renders its own demo props
+
+Adding a template is: create `scene_templates/<id>/index.html`, implement
+`window.build(props)` and `window.draw(t)`, then reference `<id>` as a scene's
+`template_id`. Nothing else changes.
+
+`draw(t)` is the animation contract. It must be **deterministic** — the same `t`
+always produces the same pixels, with no `requestAnimationFrame` and no `Date.now()`
+— because the renderer calls it once per output frame. Animation should demonstrate
+the mechanism being explained: a signal that travels and is cut, two columns
+resolving in step, a counter rolling over. Decoration for its own sake is worse than
+none.
+
+### Visual rules
+
+These are deliberate constraints, not preferences:
+
+- **One accent colour.** Electric cyan on deep navy-black. One accent reads as
+  premium; three read as a template.
+- **No real logos, product screenshots or scraped UI.** Generic abstracted mockups
+  only. Trademark exposure on a channel whose purpose is monetization is not worth it.
+- **Safe area is enforced, not eyeballed.** Scene artwork stops at
+  `--content-bottom`; the band below it is reserved for burned-in captions, so
+  graphics and captions can never overlap. QC blocks renders that violate it.
+- **Captured keyframes must be visually final.** Reveal animations run at a high
+  opacity floor — a frame captured mid-animation renders as washed out.
+
+### Running a production job
+
+```bash
+# Seed the first project (one-off, Phase 2 only)
+docker compose exec backend python -c "
+import asyncio
+from app.db.session import session_scope
+from app.services.seed_first_video import seed_first_video
+
+async def main():
+    async with session_scope() as s:
+        print((await seed_first_video(s)).id)
+
+asyncio.run(main())
+"
+
+# Approve the script, then queue a production run
+curl -X POST localhost:8080/api/v1/projects/<id>/approve-script
+curl -X POST localhost:8080/api/v1/projects/<id>/produce
+```
+
+Watch it run:
+
+```bash
+docker compose logs -f worker
+```
+
+Then open **http://localhost:3030/review** to watch the video with the Shorts
+safe-area overlay, read the script and cited sources, inspect the QC report, and
+approve or send it back.
+
+### Where media lives
+
+```
+media/
+├── cache/models/                    # Kokoro + Whisper weights (downloaded once)
+└── renders/<project-id>/
+    ├── audio/scene_NN.wav           # per-scene narration
+    ├── audio/narration.wav          # concatenated track
+    ├── frames/scene_NN_kN.png       # rendered scene keyframes
+    ├── captions.ass                 # word-timed captions
+    ├── _work/                       # per-scene clips (kept for debugging)
+    └── systemdecoded_XXXXXXXX.mp4   # the final video
+```
+
+Intermediates are deliberately kept. When a video looks wrong, the per-scene clips
+and frames are on disk and playable, which is far faster than re-deriving what a
+filter graph did.
+
+### Quality gates
+
+A render must pass before it reaches human review. Everything is measured off the
+actual file with `ffprobe` — a QC that trusts the pipeline cannot catch the pipeline
+being wrong.
+
+| Blocking | Warning |
+|---|---|
+| File exists · 1080×1920 · duration in band · **video stream covers the audio** · audio present · no clipping · captions present · all scenes rendered · timings measured from audio · no long silences · safe area respected · every asset licensed · **audio ends cleanly** · **final frame decodes** · factual sources recorded | Loudness far from −14 LUFS · closing hold shorter than 0.5s |
+
+`video_covers_audio` earns its place: container duration follows the *longest* stream,
+so a video track that ends early leaves the file looking the right length while the
+picture has already run out. Nothing else catches it.
+
+A failing render moves the project to `NEEDS_REVISION` with the blocking issues
+attached, rather than silently producing a broken video.
+
+### Publishing
+
+`MANUAL_HANDOFF` is the default and, for now, the only mode that can grow the
+channel — API uploads from an unaudited Google Cloud project are permanently locked
+to private with no appeal (ARCH §3.1).
+
+1. Approve the video in the Review UI.
+2. The system builds a package: MP4 + title + description with cited sources + tags
+   + synthetic-media disclosure + publishing notes.
+3. Upload via YouTube Studio (~60 seconds).
+4. Paste the video ID into the Review UI, and the system links it back to the project.
+
+---
+
 ## Troubleshooting
 
 **`docker compose up` fails: cannot connect to the Docker daemon**
@@ -754,6 +970,25 @@ CREATE DATABASE systemdecoded OWNER systemdecoded;
 CREATE DATABASE systemdecoded_test OWNER systemdecoded;
 ```
 
+**Production job fails with `Scene N clip failed` / `Invalid argument`**
+An FFmpeg filter-graph error. The per-scene clips in
+`media/renders/<project-id>/_work/` are kept precisely for this — play them to see
+which scene is wrong. Filter chains must be `;`-separated; joining them bare makes
+FFmpeg read `[f0][1:v]` as a link label and reject the whole graph.
+
+**First production run is slow / stalls at `alignment.model_loading`**
+Kokoro and Whisper weights download on first use into `media/cache/models/`
+(~500MB total). Later runs reuse them. `docker compose logs -f worker` shows progress.
+
+**Rendered scenes look washed out**
+A keyframe was captured mid-reveal. Scene templates must keep their opacity floor
+near 1.0 so every captured still is visually final — the animation exists for
+future frame-sequence capture, not for the stills path.
+
+**Text is covered by the Shorts UI on a real phone**
+Check it in the Review UI with the safe-area overlay enabled. Scene artwork must
+stop at `--content-bottom` (600px); the band below is reserved for captions.
+
 **OAuth fails with `redirect_uri_mismatch`**
 The URI in `.env` must match one registered in Google Cloud Console byte for byte —
 scheme, host, port and path. Check what the backend actually sends:
@@ -783,7 +1018,12 @@ Change `POSTGRES_PORT`, `BACKEND_PORT` or `FRONTEND_PORT` in `.env`.
 
 ## Known limitations
 
-- **No content pipeline yet.** Phase 0 is infrastructure. The system cannot produce a video.
+- **Rendering is slow**: capturing ~1000 frames through Chromium takes ~4 minutes per
+  video on CPU. Fine at 5 Shorts/week; it would need attention at higher volume.
+- **Script writing is manual in Phase 2.** The LLM providers arrive in Phase 4;
+  `seed_first_video.py` is a one-off seeder, not a content generator.
+- **No background music.** Deliberate: a bed would compete with narration, and
+  internally generated interface tones fit the brand better. Two subtle cues only.
 - **No authentication.** Single-user, intended for localhost or a private VPS behind a
   reverse proxy. Do not expose it to the internet as-is.
 - **`project_id` on `background_job` has no foreign key yet** — `content_project` does not

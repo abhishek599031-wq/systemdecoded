@@ -82,6 +82,98 @@ export interface SystemStatus {
   config_problems?: string[];
 }
 
+export interface ProjectSummary {
+  id: string;
+  topic: string;
+  working_title: string | null;
+  status: string;
+  content_pillar: string | null;
+  target_duration_seconds: number;
+  failure_reason: string | null;
+  created_at: string;
+}
+
+export interface QualityCheckItem {
+  name: string;
+  passed: boolean;
+  blocking: boolean;
+  detail: string;
+  measured: unknown;
+}
+
+export interface ProjectDetail extends ProjectSummary {
+  status_detail: string | null;
+  content_format: string | null;
+  curiosity_gap: string | null;
+  script: {
+    id: string;
+    version: number;
+    selected_title: string | null;
+    title_candidates: string[];
+    selected_hook: string | null;
+    hook_candidates: string[];
+    narration: string;
+    description: string | null;
+    hashtags: string[];
+    word_count: number | null;
+    authoring_mode: string;
+  } | null;
+  scenes: {
+    scene_number: number;
+    narration: string;
+    on_screen_text: string | null;
+    visual_instruction: string | null;
+    template_id: string;
+    start_seconds: number | null;
+    end_seconds: number | null;
+    duration_seconds: number | null;
+  }[];
+  research: {
+    claim: string;
+    claim_type: string;
+    confidence: string;
+    verification_status: string;
+    source: { title: string; url: string | null; publisher: string | null } | null;
+  }[];
+  render: {
+    id: string;
+    status: string;
+    filename: string | null;
+    width: number | null;
+    height: number | null;
+    fps: number | null;
+    duration_seconds: number | null;
+    bytes: number | null;
+    loudness_lufs: number | null;
+    peak_dbfs: number | null;
+    error_message: string | null;
+  } | null;
+  quality: {
+    verdict: string;
+    checks: QualityCheckItem[];
+    blocking_issues: string[];
+    warnings: string[];
+  } | null;
+  assets: { asset_type: string; origin: string; license: string; provider: string | null }[];
+  publishing: {
+    mode: string;
+    state: string;
+    video: { filename: string | null; bytes: number | null; resolution: string | null };
+    title: string | null;
+    description: string | null;
+    tags: string[];
+    contains_synthetic_media: boolean;
+    notes: string | null;
+  } | null;
+  published_video: {
+    youtube_video_id: string;
+    url: string;
+    reconciled_at: string | null;
+    method: string | null;
+  } | null;
+  timeline: { from: string | null; to: string; actor: string; reason: string | null; at: string }[];
+}
+
 export interface YouTubeStatus {
   implemented: boolean;
   enabled: boolean;
@@ -183,6 +275,27 @@ export const api = {
     }),
   cancel: (id: string) =>
     request<JobSummary>(`/api/v1/jobs/${id}/cancel`, { method: "POST" }),
+
+  projects: () => request<{ items: ProjectSummary[]; total: number }>("/api/v1/projects"),
+  project: (id: string) => request<ProjectDetail>(`/api/v1/projects/${id}`),
+  // renderId busts the browser's HTTP cache: without it, re-rendering a
+  // project keeps the same URL and the browser silently serves the previous
+  // video (the backend sets long-lived caching once it sees this param, so
+  // pass it whenever it's known).
+  videoUrl: (id: string, renderId?: string | null) =>
+    `${API_URL}/api/v1/projects/${id}/video${renderId ? `?r=${renderId}` : ""}`,
+  produce: (id: string) =>
+    request<Record<string, unknown>>(`/api/v1/projects/${id}/produce`, { method: "POST" }),
+  review: (id: string, decision: "approve" | "revise" | "reject", notes?: string) =>
+    request<Record<string, unknown>>(`/api/v1/projects/${id}/review`, {
+      method: "POST",
+      body: JSON.stringify({ decision, notes }),
+    }),
+  recordPublished: (id: string, youtube_video_id: string) =>
+    request<Record<string, unknown>>(`/api/v1/projects/${id}/published`, {
+      method: "POST",
+      body: JSON.stringify({ youtube_video_id }),
+    }),
 
   youtubeStatus: () => request<YouTubeStatus>("/api/v1/youtube/status"),
   // Asks for the consent URL rather than following a redirect, so a

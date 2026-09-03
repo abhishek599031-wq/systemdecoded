@@ -1,0 +1,51 @@
+# SystemDecoded worker image — the media production stack (Phase 2).
+#
+# Deliberately separate from the api/scheduler image. ARCH §15.2 anticipated
+# this divergence: Chromium, FFmpeg and the speech models add ~1.5GB that the
+# API has no use for, and rebuilding the API on every template tweak is waste.
+#
+# Model weights are NOT baked in. They download once into /media/cache/models,
+# which is a persisted volume, so the image stays lean and a model change does
+# not require an image rebuild.
+
+FROM python:3.12-slim AS base
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
+
+# ffmpeg   -> composition, encoding, loudness normalisation
+# espeak-ng-> grapheme->phoneme fallback for Kokoro on out-of-vocabulary words
+# fonts    -> Chromium renders our scene templates; without fonts text is boxes
+# procps   -> pgrep, for the container healthcheck
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ffmpeg \
+        espeak-ng \
+        procps \
+        curl \
+        fonts-dejavu-core \
+        fonts-liberation2 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY pyproject.toml ./
+RUN mkdir -p app && touch app/__init__.py \
+    && pip install --no-cache-dir -e ".[dev,media]"
+
+# Chromium only — we never drive Firefox or WebKit.
+RUN playwright install --with-deps chromium
+
+COPY . .
+RUN pip install --no-cache-dir -e ".[dev,media]"
+
+RUN useradd --create-home --uid 1000 appuser \
+    && mkdir -p /media \
+    && chown -R appuser:appuser /app /media \
+    && chmod -R a+rX /opt/playwright
+USER appuser
+
+CMD ["python", "-m", "app.jobs.worker"]

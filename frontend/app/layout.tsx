@@ -8,10 +8,9 @@ export const metadata: Metadata = {
 
 const NAV = [
   { label: "Dashboard", href: "/", active: true },
-  { label: "Projects", href: "#", active: false, phase: 2 },
-  { label: "Review", href: "#", active: false, phase: 2 },
+  { label: "Review", href: "/review", active: true },
   { label: "Ideas", href: "#", active: false, phase: 4 },
-  { label: "Channel", href: "#", active: false, phase: 1 },
+  { label: "Analytics", href: "#", active: false, phase: 3 },
 ];
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -26,25 +25,29 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 <div className="text-xs text-ink-500">Complex Technology. Decoded.</div>
               </div>
               <nav className="flex items-center gap-1 text-sm">
-                {NAV.map((item) => (
-                  <span
-                    key={item.label}
-                    title={item.active ? undefined : `Arrives in Phase ${item.phase}`}
-                    className={
-                      item.active
-                        ? "rounded-md bg-ink-800 px-3 py-1.5 text-ink-100"
-                        : "cursor-not-allowed rounded-md px-3 py-1.5 text-ink-500"
-                    }
-                  >
-                    {item.label}
-                    {!item.active && (
+                {NAV.map((item) =>
+                  item.active ? (
+                    <a
+                      key={item.label}
+                      href={item.href}
+                      className="rounded-md px-3 py-1.5 text-ink-300 transition hover:bg-ink-800 hover:text-ink-100"
+                    >
+                      {item.label}
+                    </a>
+                  ) : (
+                    <span
+                      key={item.label}
+                      title={`Arrives in Phase ${item.phase}`}
+                      className="cursor-not-allowed rounded-md px-3 py-1.5 text-ink-500"
+                    >
+                      {item.label}
                       <span className="ml-1.5 text-[10px] text-ink-700">P{item.phase}</span>
-                    )}
-                  </span>
-                ))}
+                    </span>
+                  ),
+                )}
               </nav>
               <div className="ml-auto rounded-full border border-ink-700 px-3 py-1 text-xs text-ink-300">
-                Phase 0 — Foundation
+                Phase 2 — Production
               </div>
             </div>
           </header>

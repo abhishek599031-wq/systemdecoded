@@ -98,4 +98,4 @@ def load_all_jobs() -> None:
     effects are the registration mechanism, so this must happen before any
     process claims or enqueues work.
     """
-    from app.jobs.tasks import system, youtube  # noqa: F401
+    from app.jobs.tasks import content, system, youtube  # noqa: F401

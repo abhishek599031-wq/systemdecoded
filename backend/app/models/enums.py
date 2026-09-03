@@ -77,3 +77,119 @@ class ConnectionStatus(StrEnum):
     EXPIRED = "EXPIRED"
     REVOKED = "REVOKED"
     ERROR = "ERROR"
+
+
+# ===========================================================================
+# Phase 2 — content production
+# ===========================================================================
+
+
+class ProjectStatus(StrEnum):
+    """Master workflow state for a ContentProject (ARCH §8.2).
+
+    One authoritative status on the project, with sub-resources (Script,
+    VideoRender, PublishingJob) carrying their own independent lifecycles. The
+    full Phase 2-8 set is declared here rather than added piecemeal, because
+    these are VARCHAR values — adding one is a code change, not a migration.
+    """
+
+    IDEA = "IDEA"
+    IDEA_APPROVED = "IDEA_APPROVED"
+    RESEARCHING = "RESEARCHING"
+    RESEARCH_READY = "RESEARCH_READY"
+    SCRIPT_GENERATING = "SCRIPT_GENERATING"
+    AWAITING_LLM_INPUT = "AWAITING_LLM_INPUT"
+    SCRIPT_REVIEW = "SCRIPT_REVIEW"
+    SCRIPT_APPROVED = "SCRIPT_APPROVED"
+    PRODUCTION_PLANNING = "PRODUCTION_PLANNING"
+    ASSETS_REQUIRED = "ASSETS_REQUIRED"
+    ASSETS_READY = "ASSETS_READY"
+    RENDERING = "RENDERING"
+    VIDEO_REVIEW = "VIDEO_REVIEW"
+    APPROVED_FOR_PUBLISHING = "APPROVED_FOR_PUBLISHING"
+    SCHEDULED = "SCHEDULED"
+    PUBLISHING = "PUBLISHING"
+    AWAITING_HUMAN_UPLOAD = "AWAITING_HUMAN_UPLOAD"
+    PUBLISHED = "PUBLISHED"
+    ANALYTICS_COLLECTING = "ANALYTICS_COLLECTING"
+    COMPLETED = "COMPLETED"
+    NEEDS_REVISION = "NEEDS_REVISION"
+    FAILED = "FAILED"
+    REJECTED = "REJECTED"
+    ARCHIVED = "ARCHIVED"
+
+    @classmethod
+    def terminal(cls) -> frozenset[ProjectStatus]:
+        return frozenset({cls.COMPLETED, cls.REJECTED, cls.ARCHIVED})
+
+    @classmethod
+    def needs_human(cls) -> frozenset[ProjectStatus]:
+        """States that block until a person acts (ARCH §8.3 rule 5)."""
+        return frozenset(
+            {
+                cls.SCRIPT_REVIEW,
+                cls.VIDEO_REVIEW,
+                cls.ASSETS_REQUIRED,
+                cls.AWAITING_LLM_INPUT,
+                cls.AWAITING_HUMAN_UPLOAD,
+            }
+        )
+
+
+class AssetType(StrEnum):
+    NARRATION_AUDIO = "NARRATION_AUDIO"
+    SCENE_FRAME = "SCENE_FRAME"
+    CAPTION_FILE = "CAPTION_FILE"
+    MUSIC = "MUSIC"
+    SFX = "SFX"
+    THUMBNAIL = "THUMBNAIL"
+    VIDEO = "VIDEO"
+
+
+class AssetOrigin(StrEnum):
+    """Where an asset came from — the basis of the licensing QC gate.
+
+    Every asset must declare this. A render cannot pass quality checks if any
+    asset lacks a license record (ARCH §14.5), which is what keeps
+    copyright/trademark risk out of a channel whose purpose is monetization.
+    """
+
+    GENERATED = "GENERATED"  # produced by our own code (scene renders, TTS)
+    LICENSED = "LICENSED"  # third-party under a recorded licence
+    PUBLIC_DOMAIN = "PUBLIC_DOMAIN"
+    USER_SUPPLIED = "USER_SUPPLIED"
+
+
+class RenderStatus(StrEnum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+
+
+class QualityVerdict(StrEnum):
+    PASS = "PASS"
+    PASS_WITH_WARNINGS = "PASS_WITH_WARNINGS"
+    FAIL = "FAIL"
+
+
+class PublishingMode(StrEnum):
+    """ARCH §3.1.
+
+    API uploads from an unaudited Google Cloud project are permanently locked
+    to private with no appeal, so MANUAL_HANDOFF is the only mode that can
+    actually grow the channel until the compliance audit passes.
+    """
+
+    MANUAL_HANDOFF = "MANUAL_HANDOFF"
+    API_PRIVATE_ONLY = "API_PRIVATE_ONLY"
+    API_FULL = "API_FULL"
+
+
+class PublishState(StrEnum):
+    PENDING = "PENDING"
+    AWAITING_HUMAN_UPLOAD = "AWAITING_HUMAN_UPLOAD"
+    UPLOADING = "UPLOADING"
+    PROCESSING = "PROCESSING"
+    DONE = "DONE"
+    FAILED = "FAILED"

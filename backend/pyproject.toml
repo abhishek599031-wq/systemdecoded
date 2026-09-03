@@ -19,6 +19,19 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Media production stack (Phase 2). Kept optional so the api/scheduler images
+# stay slim — only the worker needs these (ARCH §15.2).
+#
+# kokoro-onnx rather than the `kokoro` package: the latter pulls in torch
+# (~2GB), while onnxruntime runs the same 82M model faster on CPU.
+media = [
+    "kokoro-onnx>=0.4.9",
+    "onnxruntime>=1.20",
+    "faster-whisper>=1.1",
+    "playwright>=1.49",
+    "soundfile>=0.12",
+    "numpy>=1.26",
+]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
@@ -38,6 +51,7 @@ asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 markers = [
     "integration: requires a live PostgreSQL instance",
+    "media: requires FFmpeg, Chromium and the speech models (worker image only)",
 ]
 filterwarnings = ["error::DeprecationWarning:app.*"]
 
@@ -47,4 +61,20 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC", "BLE", "RUF"]
-ignore = ["B008"]  # FastAPI Depends() in defaults is idiomatic
+ignore = [
+    "B008",  # FastAPI Depends() in defaults is idiomatic
+    # ASYNC240 flags pathlib in async functions. We are on asyncio, not trio,
+    # and the calls it catches are exists()/stat() on local disk — microsecond
+    # syscalls, not an event-loop hazard. The genuinely blocking work (model
+    # inference, FFmpeg) is already offloaded to threads and subprocesses.
+    "ASYNC240",
+    # ASYNC109: our subprocess helpers take an explicit timeout budget. The rule
+    # wants callers to pass a cancellation scope instead, which does not apply
+    # to a wrapper whose whole purpose is bounding an external process.
+    "ASYNC109",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Narration and scene copy are content, not code. Wrapping these strings to fit
+# a column limit makes the script harder to read and edit.
+"app/services/seed_first_video.py" = ["E501"]

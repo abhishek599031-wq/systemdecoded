@@ -17,6 +17,13 @@ x-backend-env: &backend-env
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
   LOG_FORMAT: ${LOG_FORMAT:-console}
   MEDIA_ROOT: /media
+  SCENE_TEMPLATES_DIR: /scene_templates
+  TTS_VOICE: ${TTS_VOICE:-am_puck}
+  TTS_SPEED: ${TTS_SPEED:-0.92}
+  ALIGNMENT_MODEL: ${ALIGNMENT_MODEL:-base.en}
+  VIDEO_FPS: ${VIDEO_FPS:-30}
+  VIDEO_TARGET_LUFS: ${VIDEO_TARGET_LUFS:--14.0}
+  END_HOLD_SECONDS: ${END_HOLD_SECONDS:-1.0}
   SECRETS_KEY: ${SECRETS_KEY:-}
   YOUTUBE_API_ENABLED: ${YOUTUBE_API_ENABLED:-false}
   GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
@@ -34,6 +41,9 @@ x-backend-base: &backend-base
   volumes:
     - ./backend:/app
     - ./media:/media
+    # Scene templates are a design asset iterated outside the image, so they are
+    # mounted rather than baked in — editing a template needs no rebuild.
+    - ./scene_templates:/scene_templates
   depends_on:
     migrate:
       condition: service_completed_successfully
@@ -85,8 +95,15 @@ services:
       - "${BACKEND_PORT:-8000}:8000"
 
   # ----------------------------------------------------------------- worker ---
+  # Built from Dockerfile.worker: the only image carrying FFmpeg, Chromium and
+  # the speech models (ARCH §15.2). Overrides the shared build/image from
+  # *backend-base rather than inheriting the slim API image.
   worker:
     <<: *backend-base
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.worker
+    image: systemdecoded-worker:dev
     command: ["python", "-m", "app.jobs.worker"]
     environment:
       <<: *backend-env

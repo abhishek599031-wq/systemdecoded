@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>SystemDecoded · parallel_compute</title>
+    <link rel="stylesheet" href="../_base/tokens.css" />
+    <style>
+      /* Two independent columns running the same computation and arriving at
+         the same answer without communicating. Built for the TOTP explanation,
+         but the shape generalises to any "both sides derive it separately"
+         idea — consistent hashing, CRDTs, deterministic builds.
+
+         The point the layout must make visually: there is NO arrow between the
+         columns. The gap in the middle is the whole argument. */
+      .columns {
+        display: grid;
+        /* Fixed middle column so the badge has somewhere to live. With `auto`
+           it overflowed onto the cards either side. */
+        grid-template-columns: 1fr 150px 1fr;
+        gap: 10px;
+        width: 100%;
+        align-items: start;
+      }
+
+      .col {
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+        align-items: stretch;
+      }
+
+      .col__head {
+        text-align: center;
+        font-size: var(--fs-sm);
+        font-weight: 800;
+        color: var(--white);
+        padding-bottom: 6px;
+      }
+
+      .divider {
+        align-self: stretch;
+        width: 3px;
+        margin: 46px 0 0;
+        background: repeating-linear-gradient(
+          180deg,
+          var(--line-bright) 0 12px,
+          transparent 12px 26px
+        );
+        position: relative;
+      }
+      /* A glyph, not a word. Text of any length overflowed the gap and ran
+         over the cards either side; the wording now lives in .columns-note
+         below, where it has room to be read. */
+      .divider__badge {
+        position: absolute;
+        top: 46%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        width: 76px;
+        height: 76px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 34px;
+        font-weight: 800;
+        color: var(--dim);
+        background: var(--bg-deep);
+        border: 3px solid var(--line-bright);
+        border-radius: 50%;
+      }
+
+      .columns-note {
+        margin-top: var(--gap-md);
+        font-size: var(--fs-sm);
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        color: var(--muted);
+        text-align: center;
+      }
+
+      .row {
+        background: linear-gradient(180deg, var(--bg-elev-2), var(--bg-elev));
+        border: 2px solid var(--line);
+        border-radius: var(--radius-sm);
+        padding: 22px 24px;
+        text-align: center;
+      }
+      .row__label {
+        font-size: 24px;
+        font-weight: 600;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 8px;
+      }
+      .row__value {
+        font-size: 38px;
+        font-weight: 700;
+        color: var(--text);
+        font-variant-numeric: tabular-nums;
+      }
+      .row--shared .row__value {
+        color: var(--cyan);
+      }
+
+      .op {
+        text-align: center;
+        font-size: 34px;
+        font-weight: 800;
+        color: var(--dim);
+        line-height: 1;
+      }
+
+      .result {
+        border: 3px solid var(--cyan);
+        background: linear-gradient(180deg, rgba(34, 211, 238, 0.16), rgba(34, 211, 238, 0.05));
+        border-radius: var(--radius-sm);
+        padding: 26px 20px;
+        text-align: center;
+        box-shadow: 0 0 70px rgba(34, 211, 238, 0.22);
+      }
+      .result__check {
+        display: block;
+        margin-top: 6px;
+        font-size: 28px;
+        font-weight: 800;
+        color: var(--good);
+        opacity: 0;
+      }
+      .result__value {
+        font-size: 62px;
+        font-weight: 900;
+        color: var(--white);
+        font-variant-numeric: tabular-nums;
+        letter-spacing: 0.04em;
+      }
+
+      .title {
+        margin-bottom: var(--gap-md);
+        max-width: 880px;
+        text-align: center;
+      }
+      .caption {
+        margin-top: var(--gap-md);
+        max-width: 840px;
+        text-align: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="stage">
+      <div class="content center">
+        <div class="eyebrow" id="eyebrow"></div>
+        <div class="h2 title" id="title"></div>
+
+        <div class="columns">
+          <div class="col" id="left"></div>
+          <div class="divider"><div class="divider__badge">&#10005;</div></div>
+          <div class="col" id="right"></div>
+        </div>
+
+        <div class="columns-note" id="note"></div>
+        <div class="body caption" id="caption"></div>
+      </div>
+      <div class="watermark">SystemDecoded</div>
+    </div>
+
+    <script src="../_base/scene.js"></script>
+    <script>
+      window.__DEMO_PROPS__ = {
+        eyebrow: "How it actually works",
+        title: "Same inputs. Same math. *Same answer.*",
+        badge: "They never communicate",
+        left_head: "Your phone",
+        right_head: "The server",
+        rows: [
+          { label: "Shared secret", value: "K7F2…9A", shared: true },
+          { label: "Current time", value: "14:23:30", shared: true },
+        ],
+        op: "one-way function",
+        result: "418 902",
+        caption: "Neither one sent anything.",
+      };
+
+      const markup = (s) =>
+        window.esc(s || "").replace(/\*(.+?)\*/g, '<span class="accent">$1</span>');
+
+      function buildColumn(el, head, rows, op, result) {
+        el.innerHTML = "";
+        const h = document.createElement("div");
+        h.className = "col__head";
+        h.textContent = head || "";
+        el.appendChild(h);
+
+        (rows || []).forEach((r) => {
+          const row = document.createElement("div");
+          row.className = "row" + (r.shared ? " row--shared" : "");
+          row.innerHTML =
+            '<div class="row__label">' +
+            window.esc(r.label || "") +
+            '</div><div class="row__value">' +
+            window.esc(r.value || "") +
+            "</div>";
+          el.appendChild(row);
+        });
+
+        if (op) {
+          const o = document.createElement("div");
+          o.className = "op";
+          o.innerHTML = "↓<div style='font-size:22px;letter-spacing:.08em;margin-top:8px'>" +
+            window.esc(op) + "</div>";
+          el.appendChild(o);
+        }
+
+        const res = document.createElement("div");
+        res.className = "result";
+        res.innerHTML =
+          '<div class="result__value">' + window.esc(result || "") + "</div>" +
+          '<span class="result__check">&#10003; match</span>';
+        el.appendChild(res);
+      }
+
+      window.build = function (p) {
+        document.getElementById("eyebrow").textContent = p.eyebrow || "";
+        const title = document.getElementById("title");
+        title.innerHTML = markup(p.title);
+        title.style.display = p.title ? "block" : "none";
+
+        const caption = document.getElementById("caption");
+        caption.innerHTML = markup(p.caption);
+        caption.style.display = p.caption ? "block" : "none";
+
+        const note = document.getElementById("note");
+        note.textContent = p.badge || "They never communicate";
+        note.style.display = p.badge === "" ? "none" : "block";
+
+        buildColumn(document.getElementById("left"), p.left_head, p.rows, p.op, p.result);
+        buildColumn(document.getElementById("right"), p.right_head, p.rows, p.op, p.result);
+      };
+
+      const clamp01 = (v) => Math.max(0, Math.min(1, v));
+      const easeOut = (v) => 1 - Math.pow(1 - clamp01(v), 3);
+
+      window.draw = function (t) {
+        const p = window.PROPS;
+        const matchAt = p.match_at ?? 0.66;
+
+        // Rows appear in sequence — secret, then time, then the calculation,
+        // then the result — so the viewer follows the derivation instead of
+        // being shown the finished state all at once. Both columns move in
+        // lockstep, because that simultaneity IS the explanation.
+        document.querySelectorAll(".col").forEach((col) => {
+          const items = col.children;
+          for (let i = 0; i < items.length; i++) {
+            const local = easeOut((t - (i / items.length) * matchAt) / 0.26);
+            items[i].style.opacity = String(0.08 + local * 0.92);
+            items[i].style.transform = `translateY(${(1 - local) * 22}px)`;
+          }
+        });
+
+        // Both results land, then confirm together: one settling pulse, not a
+        // repeating blink.
+        const m = clamp01((t - matchAt) / 0.2);
+        document.querySelectorAll(".result").forEach((el) => {
+          const pulse = m > 0 && m < 1 ? Math.sin(m * Math.PI) : 0;
+          el.style.boxShadow = `0 0 ${70 + pulse * 90}px rgba(34,211,238,${0.22 + pulse * 0.4})`;
+          el.style.transform = `scale(${1 + pulse * 0.035})`;
+          el.style.borderColor = m >= 1 ? "var(--good)" : "var(--cyan)";
+          const check = el.querySelector(".result__check");
+          if (check) check.style.opacity = String(easeOut((t - matchAt - 0.12) / 0.18));
+        });
+
+        const note = document.getElementById("note");
+        note.style.opacity = String(easeOut((t - 0.34) / 0.28));
+
+        const title = document.getElementById("title");
+        const ta = easeOut(t / 0.24);
+        title.style.opacity = String(ta);
+        title.style.transform = `translateY(${(1 - ta) * 18}px)`;
+      };
+    </script>
+  </body>
+</html>

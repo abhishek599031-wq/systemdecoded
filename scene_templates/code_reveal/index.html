@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>SystemDecoded · code_reveal</title>
+    <link rel="stylesheet" href="../_base/tokens.css" />
+    <style>
+      /* A phone-shaped focal frame holding a rotating code plus a countdown
+         ring. Used for the hook and the payoff — the two moments that need a
+         single object to look at, not a diagram. */
+      .phone {
+        position: relative;
+        width: 560px;
+        height: 660px;
+        border-radius: 56px;
+        background: linear-gradient(180deg, var(--bg-elev-2), var(--bg));
+        border: 3px solid var(--line-bright);
+        box-shadow:
+          0 0 0 1px rgba(34, 211, 238, 0.12),
+          0 40px 120px rgba(0, 0, 0, 0.6),
+          0 0 140px rgba(34, 211, 238, 0.13);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: var(--gap-md);
+        overflow: hidden;
+      }
+
+      /* Scan sweep: subtle life without animation, positioned by seek(). */
+      .phone__sweep {
+        position: absolute;
+        left: 0;
+        right: 0;
+        height: 260px;
+        background: linear-gradient(180deg, transparent, rgba(34, 211, 238, 0.09), transparent);
+        top: calc(var(--sweep, 0) * 1px);
+      }
+
+      .code {
+        display: flex;
+        gap: 18px;
+        z-index: 2;
+      }
+
+      .digit {
+        width: 76px;
+        height: 108px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 76px;
+        font-weight: 800;
+        color: var(--white);
+        background: rgba(34, 211, 238, 0.07);
+        border: 2px solid rgba(34, 211, 238, 0.24);
+        border-radius: 18px;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .ring {
+        position: relative;
+        width: 216px;
+        height: 216px;
+        z-index: 2;
+      }
+      .ring svg {
+        transform: rotate(-90deg);
+      }
+      .ring__label {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+      }
+      .ring__num {
+        font-size: 62px;
+        font-weight: 800;
+        color: var(--cyan);
+        font-variant-numeric: tabular-nums;
+      }
+      .ring__unit {
+        font-size: 19px;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+
+      .headline {
+        margin-top: var(--gap-lg);
+        max-width: 840px;
+      }
+      .sub {
+        margin-top: var(--gap-sm);
+        max-width: 760px;
+      }
+
+      /* Closing resolution: the term the whole video just explained. */
+      .outro {
+        margin-top: var(--gap-md);
+        opacity: 0;
+      }
+      .outro__label {
+        font-size: 84px;
+        font-weight: 900;
+        letter-spacing: 0.04em;
+        color: var(--cyan);
+      }
+      .outro__expand {
+        margin-top: 10px;
+        font-size: 30px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+      }
+
+      /* Digit flip: the old value leaves upward, the new one arrives. */
+      .digit__inner {
+        display: block;
+        will-change: transform, opacity;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="stage">
+      <div class="content center">
+        <div class="eyebrow" id="eyebrow"></div>
+
+        <div class="phone">
+          <div class="phone__sweep"></div>
+          <div class="code" id="code"></div>
+          <div class="ring">
+            <svg width="216" height="216" viewBox="0 0 216 216">
+              <circle cx="108" cy="108" r="94" fill="none" stroke="#1c2740" stroke-width="12" />
+              <circle
+                id="arc"
+                cx="108"
+                cy="108"
+                r="94"
+                fill="none"
+                stroke="#22d3ee"
+                stroke-width="12"
+                stroke-linecap="round"
+                stroke-dasharray="591"
+                stroke-dashoffset="0"
+              />
+            </svg>
+            <div class="ring__label">
+              <div class="ring__num" id="secs">30</div>
+              <div class="ring__unit">seconds</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="hero headline" id="headline"></div>
+        <div class="body sub" id="sub"></div>
+        <div class="outro" id="outro">
+          <div class="outro__label" id="outroLabel"></div>
+          <div class="outro__expand" id="outroExpand"></div>
+        </div>
+      </div>
+      <div class="watermark">SystemDecoded</div>
+    </div>
+
+    <script src="../_base/scene.js"></script>
+    <script>
+      window.__DEMO_PROPS__ = {
+        eyebrow: "Authentication",
+        code: "418902",
+        headline: "Nobody sent you this code.",
+        sub: "",
+        seconds_start: 30,
+        seconds_end: 22,
+      };
+
+      window.build = function (p) {
+        document.getElementById("eyebrow").textContent = p.eyebrow || "";
+        document.getElementById("headline").innerHTML = window.esc(p.headline || "").replace(
+          /\*(.+?)\*/g,
+          '<span class="accent">$1</span>',
+        );
+        const sub = document.getElementById("sub");
+        sub.innerHTML = window.esc(p.sub || "").replace(/\*(.+?)\*/g, '<span class="accent">$1</span>');
+        sub.style.display = p.sub ? "block" : "none";
+
+        document.getElementById("outroLabel").textContent = p.outro_label || "";
+        document.getElementById("outroExpand").textContent = p.outro_expand || "";
+        document.getElementById("outro").style.display = p.outro_label ? "block" : "none";
+
+        const codeEl = document.getElementById("code");
+        codeEl.innerHTML = "";
+        const digits = String(p.code || "000000").replace(/\s+/g, "").split("");
+        digits.forEach((ch, i) => {
+          const d = document.createElement("div");
+          d.className = "digit";
+          d.dataset.i = String(i);
+          // draw() must be able to restore this: it is called at arbitrary t,
+          // including backwards, and may not depend on what it last rendered.
+          d.dataset.orig = ch;
+          const inner = document.createElement("span");
+          inner.className = "digit__inner";
+          inner.textContent = ch;
+          d.appendChild(inner);
+          codeEl.appendChild(d);
+        });
+      };
+
+      const clamp01 = (v) => Math.max(0, Math.min(1, v));
+      // Ease-out: motion should decelerate into place, never land linearly.
+      const easeOut = (v) => 1 - Math.pow(1 - clamp01(v), 3);
+
+      window.draw = function (t) {
+        const p = window.PROPS;
+        const rotateAt = p.rotate_at ?? null;
+        const rotating = rotateAt !== null && t >= rotateAt;
+
+        // ---- countdown ----
+        const from = p.seconds_start ?? 30;
+        const to = p.seconds_end ?? from;
+        let secs;
+        if (rotating && p.code_next) {
+          // Window rolled over: the clock restarts, which IS the explanation.
+          const after = clamp01((t - rotateAt) / Math.max(0.001, 1 - rotateAt));
+          secs = Math.round(30 - after * 4);
+        } else {
+          secs = Math.round(from + (to - from) * (rotateAt ? clamp01(t / rotateAt) : t));
+        }
+        document.getElementById("secs").textContent = String(secs);
+        // 591 ≈ circumference at r=94; drain the ring as the clock runs down.
+        document.getElementById("arc").setAttribute(
+          "stroke-dashoffset",
+          String(591 * (1 - clamp01(secs / 30))),
+        );
+
+        document.documentElement.style.setProperty("--sweep", String(120 + t * 380));
+
+        // ---- digits ----
+        const nextDigits = String(p.code_next || "").replace(/\s+/g, "").split("");
+        document.querySelectorAll(".digit").forEach((el, i) => {
+          const inner = el.firstElementChild;
+
+          if (rotating && nextDigits.length) {
+            // Stagger the flip so the code rolls over rather than snapping.
+            const local = clamp01((t - rotateAt) / 0.34 - i * 0.05);
+            // Assigned unconditionally in both branches: seek() is called with
+            // arbitrary t (scene.js boots at t=1), so a one-way mutation here
+            // would leave the digits stuck on the rotated value for the whole
+            // scene. Same t must always give the same pixels.
+            inner.textContent = local > 0.5 ? nextDigits[i] : el.dataset.orig;
+            // Out and up, then in from below — a mechanical counter.
+            const shift = local < 0.5 ? -local * 2 * 46 : (1 - (local - 0.5) * 2) * 46;
+            inner.style.transform = `translateY(${shift}px)`;
+            inner.style.opacity = String(Math.abs(local - 0.5) * 2 * 0.4 + 0.6);
+            el.style.borderColor =
+              local > 0.5 ? "rgba(34,211,238,0.75)" : "rgba(34,211,238,0.24)";
+            el.style.opacity = "1";
+            el.style.transform = "translateY(0)";
+            return;
+          }
+
+          // Entrance: digits land one after another, left to right.
+          inner.textContent = el.dataset.orig;
+          const local = easeOut((t - i * 0.05) / 0.28);
+          el.style.opacity = String(0.15 + local * 0.85);
+          el.style.transform = `translateY(${(1 - local) * 18}px)`;
+          inner.style.transform = "translateY(0)";
+          inner.style.opacity = "1";
+        });
+
+        // ---- headline / outro ----
+        const headline = document.getElementById("headline");
+        const hl = easeOut((t - 0.16) / 0.3);
+        headline.style.opacity = String(hl);
+        headline.style.transform = `translateY(${(1 - hl) * 20}px)`;
+
+        const outro = document.getElementById("outro");
+        if (p.outro_label) {
+          const oa = easeOut((t - (p.outro_at ?? 0.7)) / 0.25);
+          outro.style.opacity = String(oa);
+          outro.style.transform = `translateY(${(1 - oa) * 16}px)`;
+        }
+      };
+    </script>
+  </body>
+</html>
