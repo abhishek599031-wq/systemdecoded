@@ -27,6 +27,10 @@ os.environ.setdefault("LOG_FORMAT", "console")
 # Keep retry backoff sub-second so retry paths are testable without waiting.
 os.environ.setdefault("JOB_RETRY_BASE_SECONDS", "0.01")
 os.environ.setdefault("JOB_RETRY_MAX_SECONDS", "0.05")
+# Gemini request pacing exists to stay under a real API's rate limit. Every
+# Gemini call in the suite is mocked, so there is no limit to respect and the
+# only thing pacing would do is make the tests take minutes.
+os.environ["GEMINI_MIN_REQUEST_INTERVAL_SECONDS"] = "0"
 
 from app.jobs.registry import load_all_jobs  # noqa: E402
 

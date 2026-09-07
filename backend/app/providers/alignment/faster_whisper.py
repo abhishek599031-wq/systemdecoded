@@ -7,12 +7,19 @@ word timestamps is accurate enough for caption timing and costs nothing.
 Why this matters: scene timings and captions are derived from measured audio,
 never from word-count estimates. Guessing produces drift that compounds across
 a 30-second video and is miserable to debug later (ARCH §14.1).
+
+**This provider returns evidence, not truth.** It reports the words it heard
+and when it heard them. It does not decide what the narration says — that is
+the approved script's job, and `app.services.canonical_alignment` is what maps
+one onto the other. An earlier version of this file substituted script text
+only when token counts matched and otherwise kept what it heard; on Gemini
+audio, where the recogniser sometimes loops a phrase, that quietly promoted a
+hallucination into the captions. Nothing here decides caption text any more.
 """
 
 from __future__ import annotations
 
 import asyncio
-import re
 from pathlib import Path
 
 from app.config import settings
@@ -21,10 +28,6 @@ from app.core.logging import get_logger
 from app.providers.base import AlignmentResult, WordTiming
 
 log = get_logger("alignment.faster_whisper")
-
-
-def _normalise(word: str) -> str:
-    return re.sub(r"[^a-z0-9']", "", word.lower())
 
 
 class FasterWhisperAligner:
@@ -73,6 +76,26 @@ class FasterWhisperAligner:
                 initial_prompt=transcript[:900],
                 vad_filter=False,
                 beam_size=5,
+                # --- anti-hallucination decoding -------------------------------
+                # Whisper carries its own previous output forward as context. On
+                # a short, cleanly-articulated TTS clip that feedback is what
+                # makes it repeat a phrase it already emitted: having just said
+                # "That six-digit code in your authenticator app", the primed
+                # decoder finds saying it again more probable than stopping.
+                # Cutting the loop is the single most effective change here.
+                condition_on_previous_text=False,
+                # Deterministic decoding. The temperature ladder exists to escape
+                # bad beams on noisy speech; on our own studio-clean audio it
+                # only adds variance between otherwise identical renders.
+                temperature=0.0,
+                # A segment whose average token probability is this low is the
+                # model guessing. Dropping it is right for alignment: a missing
+                # anchor gets interpolated, whereas a confident-looking invention
+                # would drag real words to wrong timestamps.
+                log_prob_threshold=-1.0,
+                # Trailing silence and breath tails are where invented text
+                # appears. This suppresses runs that are almost certainly silence.
+                no_speech_threshold=0.6,
             )
             words: list[WordTiming] = []
             for segment in segments:
@@ -87,38 +110,11 @@ class FasterWhisperAligner:
         except Exception as exc:
             raise RetryableError(f"Alignment failed: {exc}") from exc
 
-        words = self._repair_against_transcript(words, transcript)
         log.info(
-            "alignment.done",
+            "alignment.heard",
             words=len(words),
+            script_words=len(transcript.split()),
             audio_duration=round(duration, 2),
             model=self.model_size,
         )
         return AlignmentResult(words=words, provider=self.name, audio_duration=duration)
-
-    def _repair_against_transcript(
-        self, words: list[WordTiming], transcript: str
-    ) -> list[WordTiming]:
-        """Restore the script's own spelling and punctuation.
-
-        Recognition returns what it heard; captions should show what we wrote.
-        When the token sequences line up we substitute the script's text while
-        keeping the measured timings. If they diverge we keep the recognised
-        words rather than forcing a bad mapping — wrong text is worse than
-        slightly imperfect casing.
-        """
-        script_tokens = [t for t in transcript.split() if t.strip()]
-        if len(script_tokens) != len(words):
-            log.warning(
-                "alignment.token_count_mismatch",
-                script_words=len(script_tokens),
-                heard_words=len(words),
-            )
-            return words
-
-        repaired: list[WordTiming] = []
-        for original, timing in zip(script_tokens, words, strict=True):
-            if _normalise(original) and _normalise(original) != _normalise(timing.word):
-                log.debug("alignment.word_differs", script=original, heard=timing.word)
-            repaired.append(WordTiming(word=original, start=timing.start, end=timing.end))
-        return repaired

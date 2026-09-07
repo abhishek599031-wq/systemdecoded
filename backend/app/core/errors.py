@@ -93,13 +93,37 @@ class NotConfiguredError(AppError):
 
 # --------------------------------------------------------------- job-facing ---
 class RetryableError(Exception):
-    """A transient failure. The worker may attempt this job again."""
+    """A transient failure. The worker may attempt this job again.
+
+    `retry_after` carries a wait the *service* asked for, in seconds, when it
+    said so — a 429's `Retry-After` header or Google's `RetryInfo.retryDelay`.
+    Honouring it beats guessing: a generic exponential ladder can exhaust every
+    attempt inside a few seconds against a per-minute rate limit, and then the
+    caller falls back for what was only ever a short wait.
+    """
+
+    def __init__(self, *args: Any, retry_after: float | None = None) -> None:
+        super().__init__(*args)
+        self.retry_after = retry_after
 
 
 class TerminalError(Exception):
     """A permanent failure. The worker must NOT attempt this job again.
 
     Always wins over retryable classification, even via subclassing.
+    """
+
+
+class QuotaExhaustedError(RetryableError):
+    """A quota is spent over a horizon far longer than any retry loop.
+
+    Distinct from an ordinary rate limit. A per-minute limit is worth waiting
+    out; a per-*day* quota is not — retrying burns attempts, delays the caller
+    by minutes, and cannot succeed. Callers should stop retrying immediately and
+    go to whatever their fallback is.
+
+    Still a `RetryableError`, because the job itself is worth attempting again
+    tomorrow: nothing is misconfigured.
     """
 
 

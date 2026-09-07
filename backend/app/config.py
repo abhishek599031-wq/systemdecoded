@@ -11,8 +11,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, ClassVar, Literal
 
-from pydantic import Field, computed_field, field_validator
+from pydantic import Field, SecretStr, computed_field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+from app.core.narration import SYSTEMDECODED_NARRATION as _NARRATION
 
 
 class Settings(BaseSettings):
@@ -77,6 +79,30 @@ class Settings(BaseSettings):
     SCENE_TEMPLATES_DIR: Path = Path("/scene_templates")
 
     # ---------------------------------------------------- production (phase 2) ---
+    # Which provider narrates. `TTS_FALLBACK_PROVIDER` only covers *transient*
+    # failures of the primary — configuration mistakes surface instead of being
+    # quietly papered over (see app/providers/tts/resolver.py).
+    # Defaults come from the SystemDecoded narration profile so provider, model,
+    # voice and performance direction stay one decision rather than four
+    # independently drifting settings (app/providers/tts/profile.py).
+    TTS_PROVIDER: Literal["gemini", "kokoro"] = _NARRATION.provider  # type: ignore[assignment]
+    TTS_FALLBACK_PROVIDER: Literal["kokoro", "none"] = _NARRATION.fallback_provider  # type: ignore[assignment]
+
+    # SecretStr so the key cannot leak through a repr, a log line, an exception
+    # or a serialised settings dump. Read it with .get_secret_value() at the
+    # single point of use.
+    GEMINI_API_KEY: SecretStr = SecretStr("")
+    GEMINI_TTS_MODEL: str = _NARRATION.model
+    GEMINI_TTS_VOICE: str = _NARRATION.voice
+    GEMINI_TIMEOUT_SECONDS: float = Field(default=120.0, gt=0)
+    GEMINI_MAX_ATTEMPTS: int = Field(default=3, ge=1, le=5)
+    # Minimum gap between Gemini requests. The preview TTS model's free tier
+    # allows only a couple of requests per minute, so a multi-block render
+    # fired back-to-back is rate-limited on everything after the first. Set to
+    # 0 on a paid tier.
+    GEMINI_MIN_REQUEST_INTERVAL_SECONDS: float = Field(default=30.0, ge=0)
+
+    # Kokoro settings (the local, zero-cost provider).
     TTS_VOICE: str = "am_puck"
     TTS_SPEED: float = Field(default=0.92, gt=0.4, le=2.0)
     TTS_LANG: str = "en-us"
@@ -191,7 +217,19 @@ class Settings(BaseSettings):
                     "OAuth tokens cannot be encrypted at rest"
                 )
             problems.extend(self._redirect_uri_problems())
+
+        if self.TTS_PROVIDER == "gemini" and not self.GEMINI_API_KEY.get_secret_value():
+            problems.append(
+                "TTS_PROVIDER=gemini but GEMINI_API_KEY is unset. This is a "
+                "configuration error and is deliberately NOT covered by the "
+                "Kokoro fallback — set the key or switch TTS_PROVIDER=kokoro."
+            )
         return problems
+
+    @property
+    def gemini_configured(self) -> bool:
+        """Whether Gemini could be used. Never reveals the key itself."""
+        return bool(self.GEMINI_API_KEY.get_secret_value())
 
     # The path half of the redirect URI is fully determined by our own routing,
     # so a mismatch here is always a config typo and is worth catching at

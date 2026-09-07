@@ -31,6 +31,9 @@ Next.js studio, and YouTube OAuth with encrypted tokens.
 - [Scheduler](#scheduler)
 - [Job architecture](#job-architecture)
 - [Media production](#media-production)
+- [Semantic narration blocks](#semantic-narration-blocks)
+- [Alignment: the script is the source of truth](#alignment-the-script-is-the-source-of-truth)
+- [Narration providers](#narration-providers)
 - [Testing](#testing)
 - [Implementation status](#implementation-status)
 - [Roadmap](#roadmap)
@@ -167,8 +170,8 @@ the system debuggable.
 | Logging | structlog | Structured, contextvar-bound |
 | YouTube client | **httpx, direct REST** | See [ADR 0002](docs/adr/0002-youtube-client.md) — the official SDK is synchronous |
 | Secrets | cryptography (Fernet) | OAuth tokens encrypted at rest |
-| TTS | Kokoro-82M (`kokoro-onnx`) | Apache-2.0, CPU real-time, no torch |
-| Alignment | faster-whisper `base.en` | Forced alignment for caption timing |
+| TTS | Gemini TTS + Kokoro-82M | Hosted for prosody, local for zero-cost fallback; one provider interface |
+| Alignment | faster-whisper `base.en` | Caption **timing** only; the approved script supplies the text |
 | Scene rendering | Playwright + Chromium | HTML/CSS/SVG templates driven frame-by-frame via `seek(t)` |
 | Composition | FFmpeg | Composition and encoding only; concat demuxer, clean cuts |
 | Sound design | numpy synthesis | Internally generated, so licensing stays clean |
@@ -176,7 +179,13 @@ the system debuggable.
 | Packaging | Docker Compose | Identical topology locally and on a VPS |
 
 **Not used, deliberately:** Redis, Celery, LangGraph, any vector database, any agent
-framework, any paid AI API. Each exclusion is argued in the architecture document.
+framework. Each exclusion is argued in the architecture document.
+
+**One paid dependency, deliberately scoped:** Gemini TTS. The architecture document
+argued for zero paid APIs, and that still holds for the LLM tier — but narration
+quality was the one place a local model was the binding constraint on whether the
+channel sounds professional. It is confined behind the TTS provider interface with a
+free local fallback, so losing it degrades quality rather than stopping production.
 
 ---
 
@@ -580,6 +589,10 @@ Coverage of the foundation:
 | Captions | Chunking on sentences/pauses/limits, ASS structure, per-word highlighting, brace escaping |
 | State machine | No unreachable states, no dead ends, review cannot be skipped, FAILED must be retriaged |
 | Production | Seed integrity, every claim sourced, templates exist, assets declare provenance |
+| Narration blocks | One request per scene for whole-block providers, clause splitting preserved for Kokoro |
+| **Canonical alignment** | **Repeated ASR text never duplicates a caption, invented words never appear, missing words interpolate, timings stay monotonic** |
+| Narration profile | Config defaults match the profile, the selected voice exists on the provider |
+| Gemini rate limits | `RetryInfo` delay honoured, backoff outlasts a 60s window, pacing spaces requests |
 | Publishing | MANUAL_HANDOFF default, idempotent packages, one live job per project, idempotent reconciliation |
 | **Real render** | **`-m media`: Kokoro + Whisper + Chromium + FFmpeg produce an actual 1080×1920 MP4** |
 
@@ -742,31 +755,259 @@ caused it.
 
 ```mermaid
 graph LR
-    A[Script + scenes] --> B[Segment into clauses<br/>app.services.prosody]
-    B --> C[Kokoro TTS<br/>per segment]
+    A[Approved script<br/>+ scenes] --> B[Semantic blocks<br/>one per scene]
+    B --> C[TTS<br/>Gemini or Kokoro]
     C --> D[MEASURE real<br/>audio durations]
     D --> E[Scene timings]
-    E --> F[faster-whisper<br/>per-scene alignment]
-    F --> G[ASS captions]
-    E --> H[Playwright renders<br/>every frame at 30fps]
-    H --> I[FFmpeg concat<br/>clean cuts]
-    G --> J[Burn captions<br/>+ SFX + loudnorm]
-    I --> J
-    J --> K[1080x1920 MP4]
-    K --> L[Quality gates]
-    L --> M[Human review]
+    E --> F[faster-whisper<br/>per-block, timing only]
+    A --> G
+    F --> G[Canonical alignment<br/>script text + measured timings]
+    G --> H[ASS captions]
+    E --> I[Playwright renders<br/>every frame at 30fps]
+    I --> J[FFmpeg concat<br/>clean cuts]
+    H --> K[Burn captions<br/>+ SFX + loudnorm]
+    J --> K
+    K --> L[1080x1920 MP4]
+    L --> M[Quality gates]
+    M --> N[Human review]
 ```
 
 **Step D is the one that matters.** Scene timings are measured from the generated
 audio, never estimated from word counts. Guessing produces drift that compounds
 across a 30-second video and is miserable to debug afterwards.
 
-**Narration is synthesized per clause, not per paragraph.** Feeding a whole scene to
-the model produces identical cadence for every sentence, which is most of what makes
-synthetic narration sound synthetic. `app/services/prosody.py` splits narration into
-spoken units and assigns each a pause by *intent* — clause (~140ms), sentence
-(~280ms), beat (~420ms), reveal (~500ms) — so emphasis lands where the script means
-it to.
+**Note the two arrows into step G.** The approved script supplies the caption
+*text*; recognition supplies only the *timings*. That is the subject of
+[Alignment](#alignment-the-script-is-the-source-of-truth) below, and it is not a
+stylistic preference — it is the fix for a real defect.
+
+### Semantic narration blocks
+
+Narration is synthesized one **semantic block** at a time — one complete beat of
+the story, which for the current Short means one block per scene, five in total.
+
+How a block is submitted depends on what the provider is good at, which the
+provider declares itself via `prefers_whole_block`:
+
+| Provider | Submitted as | Why |
+|---|---|---|
+| Gemini | The whole block | It is *directed* to vary its pacing and slow around reveals. Give it a paragraph and it finds the rhythm itself. |
+| Kokoro | Clause by clause | It reads every sentence with an identical contour, so `app/services/prosody.py` shapes the pauses instead — clause (~140ms), sentence (~280ms), beat (~420ms), reveal (~500ms). |
+
+This replaced clause-level synthesis for every provider, which made **14 API
+calls** for a five-scene Short. Against a preview model whose free tier allows a
+couple of requests per minute, that is both slow and needlessly fragile — and it
+threw away the prosody Gemini was being asked for.
+
+Blocks are trimmed of edge silence and levelled to a common loudness before they
+are joined, so the gap between two scenes is the gap the pipeline chose rather
+than that plus whatever lead-in the model happened to emit, and no block sits
+louder than its neighbours.
+
+### Alignment: the script is the source of truth
+
+```
+APPROVED SCRIPT ──► canonical words, punctuation, captions
+                          │
+                          ▼
+                  CANONICAL ALIGNMENT ◄── timing evidence ── GEMINI AUDIO
+                          │                                       ▲
+                          ▼                                       │
+                    timed captions                    faster-whisper hears it
+```
+
+faster-whisper answers **when** words were spoken. It does not get to decide
+**what** the narration says.
+
+This distinction was learned the hard way. Gemini narrated the audition script
+correctly; faster-whisper transcribed it with a phrase repeated three times and
+an invented "Not yet." that is nowhere in the script. The old aligner kept
+recognised words whenever token counts disagreed — so a hallucination would have
+gone straight into the captions.
+
+`app/services/canonical_alignment.py` now aligns the approved text against what
+was heard (Needleman–Wunsch over normalised tokens) and:
+
+- **matched** canonical words take their measured timestamps;
+- **unmatched** canonical words are interpolated between their neighbours;
+- **recognised words with no counterpart** — the hallucinations — are discarded;
+- timings are forced **monotonic**, so captions can never jump backwards;
+- if coverage falls below 55%, timings degrade to proportional distribution
+  across the real block duration and the block is flagged.
+
+Caption text is *never* substituted, at any confidence level. The worst case is
+slightly imprecise timing on correct words, never confident timing on wrong ones.
+
+Decoding is also hardened against the loop at its source:
+`condition_on_previous_text=False` (Whisper feeding its own output back is what
+makes it repeat itself), `temperature=0.0`, plus log-probability and no-speech
+thresholds.
+
+Three QC checks report on this rather than hide it: `caption_timing_measured`,
+`no_transcription_loops` and `caption_timing_monotonic`. All three are
+non-blocking warnings — the captions are correct either way; these say how much
+of the timing was measured rather than estimated.
+
+### Narration providers
+
+Narration goes through a provider abstraction, so the rest of the pipeline never
+learns which backend produced the audio (ARCH §5.3).
+
+| Provider | Cost | Use |
+|---|---|---|
+| **Gemini TTS** (`gemini-3.1-flash-tts-preview`) | Paid / quota-limited | Better prosody; accepts natural-language performance direction |
+| **Kokoro-82M** (`kokoro-onnx`) | Free, local | Always available; the transient-failure fallback |
+
+The channel's voice is **Algieba** on Gemini, chosen by auditioning five voices
+on an identical script at identical settings. Provider, model, voice and
+performance direction are declared together as one `NarrationProfile` in
+`app/core/narration.py`, because a voice is all four of those things and
+splitting them across unrelated settings is how they drift apart. `settings`
+takes its defaults from that profile and can still override every field.
+
+```env
+TTS_PROVIDER=gemini            # gemini | kokoro
+TTS_FALLBACK_PROVIDER=kokoro   # kokoro | none
+
+GEMINI_API_KEY=                # real value in .env ONLY
+GEMINI_TTS_MODEL=gemini-3.1-flash-tts-preview
+GEMINI_TTS_VOICE=Algieba
+GEMINI_TIMEOUT_SECONDS=120
+GEMINI_MAX_ATTEMPTS=3
+GEMINI_MIN_REQUEST_INTERVAL_SECONDS=30   # 0 on a paid tier
+```
+
+> **Define each key exactly once.** A dotenv file accepts duplicate keys without
+> complaint and silently uses the last one. A stray second `GEMINI_TTS_VOICE`
+> lower in the file is enough to narrate an entire video in the wrong voice.
+
+**After changing any of these, recreate the containers** — `docker compose restart`
+reuses the old environment and the change will appear to do nothing:
+
+```bash
+docker compose up -d --force-recreate backend worker scheduler
+```
+
+#### Security
+
+`GEMINI_API_KEY` is typed as a pydantic `SecretStr`, so it cannot leak through a
+repr, a log line, a serialised settings dump or an exception. It is read with
+`.get_secret_value()` at exactly one place (`app/providers/tts/gemini.py`) and
+sent as an `x-goog-api-key` **header**, never a query parameter — query strings
+end up in access and proxy logs. It is never exposed through any API response
+and never reaches the browser: all Gemini calls originate in the worker.
+
+The real key belongs in `.env` (git-ignored) and nowhere else. `.env.example`
+carries an empty placeholder.
+
+#### Rate limits and quota — read this before rendering
+
+There are **two** different 429s, and they need opposite handling.
+
+| | Limit | Handling |
+|---|---|---|
+| Requests per minute | A few | Wait it out: pacing plus retry |
+| **Requests per day** | **10** for `gemini-3.1-flash-tts` on the free tier | Give up immediately and fall back |
+
+**The daily quota is the binding constraint.** Ten requests per day, per
+project, per model. One five-block Short costs five of them, so the free tier
+allows **two renders per day** — and a set of five voice auditions costs another
+five. Check `media/voice_auditions/` before starting a render; the error is
+`GenerateRequestsPerDayPerProjectPerModel-FreeTier` and it does not clear until
+the quota resets.
+
+Retrying a spent daily quota is pointless, so it is detected specifically
+(`QuotaExhaustedError`) and skips the retry loop. The service still returns a
+`retryDelay` of a few seconds on those responses, which is misleading — waiting
+14 seconds cannot restore a daily allowance.
+
+For an ordinary rate limit, the wait comes from the service itself
+(`RetryInfo.retryDelay`) rather than from a guess, and the fallback ladder
+(5s, 15s, 45s) is sized so three attempts outlast a 60-second window. An earlier
+version used 1.5s and 3s, spent every attempt inside five seconds, and fell back
+for what was only ever a short wait.
+
+Enabling billing on the Google Cloud project removes the daily cap; set
+`GEMINI_MIN_REQUEST_INTERVAL_SECONDS=0` at the same time.
+
+#### One narrator per video
+
+If the primary provider cannot narrate the **whole** script, the whole script is
+re-read by the fallback. Falling back block by block is locally correct and
+globally unusable: the first Algieba render exhausted its daily quota after
+scene 1 and produced a video narrated by Gemini for four seconds and by Kokoro
+for the remaining twenty-six. A narrator that changes voice a quarter of the way
+through is worse than either voice used throughout.
+
+`VideoRender.spec["narration"]` records what actually produced the audio —
+read from the blocks, not from `settings` — plus `single_voice` as an explicit
+assertion.
+
+#### Fallback: what it does and does not cover
+
+```
+Gemini transient failure (429, 5xx, timeout)
+   → wait as long as the service asked, else 5s / 15s / 45s
+   → up to GEMINI_MAX_ATTEMPTS
+   → still failing? fall back to Kokoro and record it
+
+Configuration or programming error
+   (missing key, unknown voice, bad model, response we cannot parse)
+   → surface immediately, NEVER fall back
+```
+
+That split is deliberate. Falling back on a missing API key would mean every
+video quietly narrates in the wrong voice with nothing reporting a problem — the
+failure would only ever be found by listening. Configuration mistakes are meant
+to be loud.
+
+When a fallback does happen, `AudioResult.provider` says `kokoro` and
+`fallback_used` is `true`; both are persisted onto the narration
+`ProductionAsset.asset_metadata`, alongside model, voice, sample rate and
+`generated_at`. A fallback is never recorded as if Gemini produced it.
+
+#### Voice direction
+
+Gemini takes performance direction as part of the prompt. The SystemDecoded
+voice identity lives in one place — `app/core/narration.py`, re-exported through
+`app/providers/tts/direction.py` — for the same reason the visual identity lives
+in `tokens.css`. Providers that cannot take direction (Kokoro) ignore it.
+
+The direction asks for an intelligent technology storyteller: conversational,
+calm, confident, curious; a knowledgeable person explaining something
+interesting to a friend; natural pauses, subtle emphasis on reveals, pacing that
+varies with meaning. It explicitly rules out announcer delivery, generic
+AI-narrator cadence, over-enthusiastic YouTube presentation and robotic rhythm.
+
+Each render records the direction's `fingerprint` (a short stable hash) in
+`VideoRender.spec`, so two takes that sound different can be traced to a changed
+performance prompt without copying the whole instruction block into every row.
+
+#### Voice auditions
+
+Compare voices on the same line before committing to one:
+
+```bash
+docker compose exec worker python -m app.cli.audition
+docker compose exec worker python -m app.cli.audition Charon Kore Puck
+```
+
+Output goes to `media/voice_auditions/gemini_<voice>.wav`. Every variable except
+the voice is held constant — same script, same style direction, same audio
+settings, and peak-normalised to a fixed level, because otherwise the loudest
+sample always sounds like the best one.
+
+An unknown voice id is reported rather than silently substituted: a swapped
+voice would produce a file labelled with a name the audio does not match.
+
+To adopt a voice, set `GEMINI_TTS_VOICE` in `.env` and recreate the containers.
+
+**Rate limits.** The preview TTS model's free tier allows only a couple of
+requests per minute, so auditions are paced ~32s apart and retry 429s with
+backoff. Five voices takes roughly three minutes. This is a quota limit, not a
+fault.
+
+---
 
 ### Local dependencies
 
@@ -775,8 +1016,8 @@ worker carries the media stack (`backend/Dockerfile.worker`, ~3GB).
 
 | Tool | Role | Notes |
 |---|---|---|
-| **Kokoro-82M** (`kokoro-onnx`) | Narration | Apache-2.0, CPU real-time. `kokoro-onnx` rather than `kokoro` — the latter pulls in torch (~2GB) |
-| **faster-whisper** (`base.en`) | Forced alignment | We know the words; we need their position in audio we generated |
+| **Kokoro-82M** (`kokoro-onnx`) | Narration (local fallback) | Apache-2.0, CPU real-time. `kokoro-onnx` rather than `kokoro` — the latter pulls in torch (~2GB) |
+| **faster-whisper** (`base.en`) | Timing evidence | We know the words; we need their position in audio we generated. It never supplies caption text — see [Alignment](#alignment-the-script-is-the-source-of-truth) |
 | **Playwright + Chromium** | Scene rendering | Drives each template's `seek(t)` once per output frame — real motion, not a Ken Burns push |
 | **FFmpeg** | Composition, captions, audio | Composition and encoding only — visual design lives in the templates |
 | **Internally generated SFX** | Sound design | Synthesised with numpy (`app/services/sfx.py`); no third-party audio, so licensing stays trivially clean |
@@ -1034,6 +1275,13 @@ Change `POSTGRES_PORT`, `BACKEND_PORT` or `FRONTEND_PORT` in `.env`.
   is the only genuinely irreplaceable asset.
 - **`SECRETS_KEY` must be set** for the YouTube integration; the app refuses to store
   tokens unencrypted and reports it as a config problem.
+- **Gemini narration is capped at 10 requests per day** on the free tier for
+  `gemini-3.1-flash-tts`. A five-block Short costs five, so the free tier allows two
+  renders per day, and a set of voice auditions costs five more. Enable billing to
+  remove the cap. This is a hard blocker on re-rendering, not a slowdown.
+- **Speech recognition still hallucinates on clean TTS audio.** It cannot corrupt caption
+  *text* — the approved script is canonical — but a block whose transcription loops badly
+  gets less precise caption *timing*, and QC reports that rather than hiding it.
 
 ---
 

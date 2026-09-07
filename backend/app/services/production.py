@@ -2,17 +2,20 @@
 
 The ordering here is the important part, and it is not arbitrary:
 
-    1. Synthesize narration per *spoken segment* (clause/sentence).
+    1. Synthesize narration one *semantic block* at a time.
     2. MEASURE the real audio durations.
     3. Derive scene timings from those measurements.
-    4. Align each scene against its own audio for caption timing.
-    4b. Reassemble with intent-shaped pauses (app.services.prosody).
-    5. Render scene visuals.
+    4. Align each block against its own audio, mapping timings onto the
+       approved script (app.services.canonical_alignment).
+    5. Render scene visuals to the measured durations.
     6. Composite.
 
 Steps 2-3 are the ones people skip. Estimating scene timing from word counts
 produces drift that compounds across a video and is miserable to debug, so
 timings here are always measured, never guessed (ARCH §14.1).
+
+Step 4 has one rule that overrides everything else: **the approved script is
+what the captions say.** Speech recognition supplies timing and nothing else.
 
 Every stage persists its output as a `ProductionAsset` with declared origin and
 licence, so "where did this video come from?" is always answerable.
@@ -32,8 +35,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.clock import utcnow
-from app.core.errors import TerminalError
+from app.core.errors import RetryableError, TerminalError
 from app.core.logging import get_logger
+from app.core.narration import SYSTEMDECODED_DIRECTION
 from app.models.content import (
     ContentProject,
     ProductionAsset,
@@ -53,7 +57,8 @@ from app.providers.base import (
 from app.providers.compositor import captions as caption_builder
 from app.providers.compositor.ffmpeg import FFmpegCompositor
 from app.providers.renderer.playwright_frames import PlaywrightFrameRenderer
-from app.providers.tts.kokoro import KokoroTTS
+from app.providers.tts.resolver import ResilientTTS, build_provider, voice_for
+from app.services.canonical_alignment import AlignmentQuality, align_to_canonical
 from app.services.prosody import segment_narration
 
 log = get_logger("production")
@@ -61,6 +66,19 @@ log = get_logger("production")
 # Small pause between scenes so narration does not run together. Kept short —
 # dead air is the fastest way to lose a Shorts viewer.
 INTER_SCENE_GAP = 0.12
+
+# Silence quieter than this at a block's edges is trimmed before assembly. A
+# generative TTS model decides its own lead-in and tail, and those vary per
+# request; leaving them in means the gap between two scenes is "whatever the
+# model emitted, plus ours", which is neither controllable nor consistent.
+# -45 dB is well below speech but above the noise floor of clean synthesis.
+EDGE_SILENCE_THRESHOLD_DB = -45
+
+# Per-block loudness target, applied before the blocks are joined. Without it,
+# block-to-block level differences survive into the master, because the final
+# loudnorm measures the whole track and cannot fix variation inside it. The
+# master pass then takes the assembled track to VIDEO_TARGET_LUFS.
+BLOCK_LUFS = -16.0
 
 
 @dataclass(slots=True)
@@ -88,6 +106,10 @@ class SceneAudio:
     # Extra time the visuals stay on screen after the narration stops. Used for
     # the closing hold so the video resolves rather than simply stopping.
     hold_after: float = 0.0
+    # What actually produced this block's audio. Carried on the block rather
+    # than read back from settings at render time, because settings say what is
+    # configured now and this has to say what was used then.
+    provenance: dict | None = None
 
     @property
     def visual_duration(self) -> float:
@@ -175,51 +197,170 @@ async def _concat_segments(parts: list[SegmentAudio], out_path: Path, tail: floa
         raise TerminalError(f"Segment concat failed: {err.strip()[-500:]}")
 
 
+async def _measure(path: Path) -> float:
+    """Duration of an audio file, read from the file itself."""
+    from app.providers.compositor.ffmpeg import _run
+
+    code, out, err = await _run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=nw=1:nk=1", str(path)]
+    )
+    if code != 0:
+        raise TerminalError(f"Could not measure {path.name}: {err.strip()[-300:]}")
+    return float(out.strip())
+
+
+async def _prepare_block(path: Path) -> float:
+    """Trim edge silence and set a common level, in place.
+
+    Both halves matter for a multi-block read. Trimming makes the pause between
+    two scenes exactly the pause the pipeline chose, instead of that plus
+    whatever lead-in the model produced that time. Levelling makes the blocks
+    sound like one take — the master loudness pass measures the assembled track
+    and so cannot correct differences *within* it.
+    """
+    from app.providers.compositor.ffmpeg import _run
+
+    trimmed = path.with_name(f"{path.stem}_prepared.wav")
+    silence = (
+        f"silenceremove=start_periods=1:start_duration=0:"
+        f"start_threshold={EDGE_SILENCE_THRESHOLD_DB}dB:detection=peak"
+    )
+    graph = f"{silence},areverse,{silence},areverse,loudnorm=I={BLOCK_LUFS}:TP=-2.0:LRA=11"
+
+    code, _, err = await _run(
+        ["ffmpeg", "-y", "-hide_banner", "-nostats", "-i", str(path),
+         "-af", graph, "-ar", "24000", "-ac", "1", str(trimmed)]
+    )
+    if code != 0:
+        raise TerminalError(f"Block preparation failed for {path.name}: {err.strip()[-500:]}")
+
+    duration = await _measure(trimmed)
+    if duration <= 0.05:
+        # Trimming removed everything, which means the threshold ate real
+        # speech or the block is silent. Either way, do not ship it.
+        raise TerminalError(
+            f"{path.name} is empty after silence trimming ({duration:.3f}s) — "
+            "narration audio may be silent"
+        )
+    trimmed.replace(path)
+    return duration
+
+
 async def synthesize_narration(
     session: AsyncSession, project: ContentProject, script: Script, voice: VoiceSpec | None = None
 ) -> list[SceneAudio]:
-    """Synthesize narration segment by segment and measure the result.
+    """Synthesize narration one semantic block per scene, and measure it.
 
-    Segment-level synthesis is what removes the uniform cadence of feeding a
-    whole paragraph to the model: each clause gets its own natural contour, and
-    the pause after it is chosen by intent rather than a fixed constant
-    (app.services.prosody).
+    A "block" is one scene's narration: a complete beat of the story. How it is
+    submitted depends on what the provider does well, declared by the provider
+    itself as `prefers_whole_block`:
+
+    * Gemini is *directed* to vary its pacing and to slow around reveals, so it
+      receives the whole block and produces the internal rhythm itself. Five
+      scenes means five API calls rather than the fourteen that clause-level
+      synthesis needed — which matters against a preview model whose free tier
+      allows a couple of requests per minute.
+    * Kokoro gives every sentence an identical contour, so the block is split
+      into clauses and the pause after each is chosen by intent
+      (app.services.prosody).
+
+    Either way the caller gets the same thing: one measured audio file per
+    scene.
     """
-    voice = voice or VoiceSpec(
-        voice=settings.TTS_VOICE, speed=settings.TTS_SPEED, lang=settings.TTS_LANG
-    )
     scenes = sorted(script.scenes, key=lambda s: s.scene_number)
     if not scenes:
         raise TerminalError("Script has no scenes")
 
+    # Fall back per *video*, never per block.
+    #
+    # The obvious design — let each block retry and fall back on its own — was
+    # what ran first, and it produced a video narrated by Gemini for scene 1 and
+    # by Kokoro for scenes 2 to 5, because the daily quota ran out mid-render.
+    # Every individual decision was correct and the result was unusable: a
+    # narrator that changes voice a quarter of the way in is worse than either
+    # voice used throughout.
+    #
+    # So the primary is given no fallback of its own. If it cannot carry the
+    # whole script, the whole script is re-read by the fallback, and the video
+    # has one narrator either way. `TerminalError` still propagates untouched:
+    # a configuration mistake must not be answered by switching provider.
+    primary = ResilientTTS(fallback=None)
+    voice = voice or voice_for(settings.TTS_PROVIDER)
+    try:
+        return await _synthesize_blocks(session, project, scenes, primary, voice)
+    except RetryableError as exc:
+        if settings.TTS_FALLBACK_PROVIDER == "none":
+            raise
+        fallback = build_provider(settings.TTS_FALLBACK_PROVIDER)
+        log.warning(
+            "production.narration_fallback",
+            primary=settings.TTS_PROVIDER,
+            fallback=settings.TTS_FALLBACK_PROVIDER,
+            reason=str(exc)[:300],
+            note="whole narration re-read so the video has a single voice",
+        )
+        return await _synthesize_blocks(
+            session, project, scenes, fallback,
+            voice_for(settings.TTS_FALLBACK_PROVIDER),
+            fallback_from=settings.TTS_PROVIDER,
+            fallback_reason=str(exc)[:300],
+        )
+
+
+async def _synthesize_blocks(
+    session: AsyncSession,
+    project: ContentProject,
+    scenes: list[Scene],
+    tts,
+    voice: VoiceSpec,
+    fallback_from: str | None = None,
+    fallback_reason: str | None = None,
+) -> list[SceneAudio]:
+    """Read every block with one provider, and measure what comes back."""
+    whole_block = getattr(tts, "prefers_whole_block", False)
     out_dir = project_dir(project.id) / "audio"
     out_dir.mkdir(parents=True, exist_ok=True)
-    tts = KokoroTTS()
 
     results: list[SceneAudio] = []
+    used_fallback = False
+    calls = 0
     cursor = 0.0
     for scene in scenes:
         props = scene.template_props or {}
-        reveals = frozenset(props.get("reveal_segments") or [])
-        segments = segment_narration(scene.narration, reveal_indexes=reveals)
-        if not segments:
-            raise TerminalError(f"Scene {scene.scene_number} has no speakable narration")
-
-        parts: list[SegmentAudio] = []
-        for index, segment in enumerate(segments):
-            seg_path = out_dir / f"scene_{scene.scene_number:02d}_s{index:02d}.wav"
-            result = await tts.synthesize(segment.text, voice, seg_path)
-            parts.append(
-                SegmentAudio(
-                    path=seg_path,
-                    duration=result.duration_seconds,
-                    pause_after=segment.pause_seconds,
-                )
-            )
-
         scene_path = out_dir / f"scene_{scene.scene_number:02d}.wav"
-        await _concat_segments(parts, scene_path)
-        duration = sum(p.duration + p.pause_after for p in parts)
+
+        if whole_block:
+            if not scene.narration.strip():
+                raise TerminalError(f"Scene {scene.scene_number} has no speakable narration")
+            result = await tts.synthesize(scene.narration, voice, scene_path)
+            calls += 1
+            used_fallback = used_fallback or result.fallback_used
+            last_result = result
+            duration = await _prepare_block(scene_path)
+            parts = [SegmentAudio(path=scene_path, duration=duration, pause_after=0.0)]
+        else:
+            reveals = frozenset(props.get("reveal_segments") or [])
+            segments = segment_narration(scene.narration, reveal_indexes=reveals)
+            if not segments:
+                raise TerminalError(f"Scene {scene.scene_number} has no speakable narration")
+
+            parts = []
+            for index, segment in enumerate(segments):
+                seg_path = out_dir / f"scene_{scene.scene_number:02d}_s{index:02d}.wav"
+                result = await tts.synthesize(segment.text, voice, seg_path)
+                calls += 1
+                used_fallback = used_fallback or result.fallback_used
+                last_result = result
+                parts.append(
+                    SegmentAudio(
+                        path=seg_path,
+                        duration=result.duration_seconds,
+                        pause_after=segment.pause_seconds,
+                    )
+                )
+            await _concat_segments(parts, scene_path)
+            duration = sum(p.duration + p.pause_after for p in parts)
 
         is_last = scene is scenes[-1]
         hold = settings.END_HOLD_SECONDS if is_last else 0.0
@@ -241,10 +382,19 @@ async def synthesize_narration(
             provider=tts.name,
             duration_seconds=duration,
             metadata={
-                "voice": result.voice,
-                "speed": voice.speed,
+                **last_result.as_asset_metadata(),
                 "scene": scene.scene_number,
                 "segments": len(parts),
+                "whole_block": whole_block,
+                "speed": voice.speed,
+                # Set when the whole narration was re-read by the fallback, so
+                # a stored asset always says what actually produced it.
+                **(
+                    {"fallback_used": True, "fallback_from": fallback_from,
+                     "fallback_reason": fallback_reason}
+                    if fallback_from
+                    else {}
+                ),
             },
         )
         results.append(
@@ -252,6 +402,13 @@ async def synthesize_narration(
                 scene=scene, path=scene_path, duration=duration,
                 start=start, end=end, segments=parts,
                 gap_after=gap, hold_after=hold,
+                provenance={
+                    "provider": last_result.provider,
+                    "model": last_result.model,
+                    "voice": last_result.voice,
+                    "fallback_used": bool(fallback_from) or last_result.fallback_used,
+                    "fallback_from": fallback_from,
+                },
             )
         )
 
@@ -259,11 +416,15 @@ async def synthesize_narration(
     log.info(
         "production.narration_done",
         scenes=len(results),
+        blocks=len(results) if whole_block else None,
+        tts_calls=calls,
         segments=sum(len(r.segments) for r in results),
         narration_seconds=round(results[-1].end, 2),
         total_seconds=round(results[-1].end + results[-1].hold_after, 2),
-        voice=voice.voice,
-        speed=voice.speed,
+        provider=last_result.provider,
+        model=last_result.model,
+        voice=last_result.voice,
+        fallback_used=used_fallback,
     )
     return results
 
@@ -308,25 +469,66 @@ async def concat_narration(
 
 
 # --------------------------------------------------------------- alignment ---
+@dataclass(slots=True)
+class AlignedNarration:
+    """Approved words with measured timings, plus how well that went."""
+
+    words: list[WordTiming]
+    quality: list[AlignmentQuality]
+
+    @property
+    def warnings(self) -> list[str]:
+        return [w for q in self.quality for w in q.warnings]
+
+    @property
+    def worst_coverage(self) -> float:
+        return min((q.coverage for q in self.quality), default=0.0)
+
+    def as_metadata(self) -> dict:
+        return {
+            "blocks": len(self.quality),
+            "words": len(self.words),
+            "worst_coverage": round(self.worst_coverage, 4),
+            "warnings": self.warnings,
+            "per_block": [q.as_dict() for q in self.quality],
+        }
+
+
 async def align_narration(
     session: AsyncSession, project: ContentProject, parts: list[SceneAudio]
-) -> list[WordTiming]:
-    """Align each scene against its own audio, then offset into the timeline.
+) -> AlignedNarration:
+    """Time the approved script against the audio, block by block.
 
-    Deliberately per-scene rather than over the concatenated track. Aligning the
-    whole narration at once made token counts drift (recognition merges or
-    splits words differently across a 38-second read), which lost the script's
-    punctuation and produced captions that ran across clause boundaries.
+    Two decisions here, both load-bearing.
 
-    Per-scene alignment keeps each comparison short enough to match exactly, and
-    it makes scene boundaries hard caption breaks for free.
+    **Per block, not per track.** Aligning a 38-second read in one pass let
+    recognition merge and split words differently along the way, which lost the
+    script's clause structure. Per-block keeps each comparison short, isolates a
+    bad block instead of corrupting everything after it, and makes scene
+    boundaries hard caption breaks for free.
+
+    **The script wins.** Recognition output is never used as caption text. Each
+    block's approved narration is aligned against the words that were heard,
+    takes timings where they match, and is interpolated where they do not.
+    Recognised words with no counterpart in the script — the hallucinations —
+    are discarded. Without this, a transcription loop becomes a duplicated
+    caption, which is exactly what the Gemini auditions produced.
     """
     aligner = FasterWhisperAligner()
     words: list[WordTiming] = []
+    quality: list[AlignmentQuality] = []
 
     for part in parts:
-        result = await aligner.align(part.path, part.scene.narration)
-        for w in result.words:
+        heard = await aligner.align(part.path, part.scene.narration)
+        aligned = align_to_canonical(
+            part.scene.narration,
+            heard.words,
+            block_start=0.0,
+            block_end=part.duration,
+            label=f"scene_{part.scene.scene_number}",
+        )
+        quality.append(aligned.quality)
+        for w in aligned.words:
             words.append(
                 WordTiming(
                     word=w.word,
@@ -337,18 +539,33 @@ async def align_narration(
 
     if not words:
         raise TerminalError("Alignment produced no word timings; captions would be empty")
-    log.info("production.alignment_done", words=len(words), scenes=len(parts))
-    return words
+
+    result = AlignedNarration(words=words, quality=quality)
+    log.info(
+        "production.alignment_done",
+        words=len(words),
+        blocks=len(parts),
+        worst_coverage=round(result.worst_coverage, 3),
+        warnings=len(result.warnings),
+    )
+    return result
 
 
 async def build_captions(
-    session: AsyncSession, project: ContentProject, words: list[WordTiming]
+    session: AsyncSession, project: ContentProject, aligned: AlignedNarration
 ) -> Path:
+    """Write captions from the approved script's own words.
+
+    `aligned.words` is canonical by construction — the alignment stage never
+    substitutes recognised text — so nothing here needs to sanitise it. The
+    alignment quality is stored alongside so a caption file can be traced back
+    to how much of it was measured rather than interpolated.
+    """
     ass_path = project_dir(project.id) / "captions.ass"
     ass_path.parent.mkdir(parents=True, exist_ok=True)
     ass_path.write_text(
         caption_builder.build_ass(
-            words, width=settings.VIDEO_WIDTH, height=settings.VIDEO_HEIGHT
+            aligned.words, width=settings.VIDEO_WIDTH, height=settings.VIDEO_HEIGHT
         ),
         encoding="utf-8",
     )
@@ -358,7 +575,7 @@ async def build_captions(
         asset_type=AssetType.CAPTION_FILE,
         path=ass_path,
         provider="ass-builder",
-        metadata={"words": len(words)},
+        metadata={"words": len(aligned.words), "alignment": aligned.as_metadata()},
     )
     return ass_path
 
@@ -446,6 +663,7 @@ async def compose_video(
     frames: dict[int, list[Path]],
     narration: Path,
     subtitles: Path,
+    aligned: AlignedNarration | None = None,
 ) -> VideoRender:
     render = VideoRender(
         project_id=project.id,
@@ -517,8 +735,17 @@ async def compose_video(
         "target_lufs": spec.target_lufs,
         "captions": subtitles.name,
         "renderer": "playwright-frames",
-        "voice": settings.TTS_VOICE,
-        "voice_speed": settings.TTS_SPEED,
+        # What actually narrated this render, taken from the blocks themselves.
+        # Reading it back from settings would have reported "gemini / Algieba"
+        # for a video the fallback had narrated — the first run did exactly
+        # that, and the render record disagreed with the audio.
+        "narration": {
+            **(parts[0].provenance or {}),
+            "direction": SYSTEMDECODED_DIRECTION.fingerprint,
+            "blocks": len(parts),
+            "single_voice": len({(p.provenance or {}).get("voice") for p in parts}) == 1,
+        },
+        "alignment": aligned.as_metadata() if aligned else None,
         "sfx_cues": len(cues),
         "end_hold_seconds": parts[-1].hold_after,
         "crf": 16,
@@ -569,7 +796,9 @@ async def produce(session: AsyncSession, project: ContentProject) -> VideoRender
 
     parts = await synthesize_narration(session, project, script)
     narration = await concat_narration(session, project, parts)
-    words = await align_narration(session, project, parts)
-    subtitles = await build_captions(session, project, words)
+    aligned = await align_narration(session, project, parts)
+    subtitles = await build_captions(session, project, aligned)
     frames = await render_scenes(session, project, parts)
-    return await compose_video(session, project, script, parts, frames, narration, subtitles)
+    return await compose_video(
+        session, project, script, parts, frames, narration, subtitles, aligned
+    )

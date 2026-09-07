@@ -39,6 +39,10 @@ CANDIDATE_VOICES = ("af_heart", "af_bella", "am_michael", "bm_george", "af_nicol
 class KokoroTTS:
     name = "kokoro-onnx"
 
+    # Kokoro reads every sentence with the same contour, so the pipeline splits
+    # the text into clauses and chooses the pause after each one by intent.
+    prefers_whole_block = False
+
     def __init__(self, model_dir: Path | None = None) -> None:
         self.model_dir = model_dir or (settings.MEDIA_ROOT / "cache" / "models")
         self._kokoro = None

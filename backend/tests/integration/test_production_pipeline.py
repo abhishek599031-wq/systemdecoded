@@ -378,3 +378,195 @@ async def test_end_to_end_render_produces_a_real_mp4(session) -> None:
     check = await quality.run_quality_checks(session, project, render)
     await session.commit()
     assert check.verdict != QualityVerdict.FAIL, check.blocking_issues
+
+
+# ------------------------------------------------- semantic narration blocks ---
+class _CountingTTS:
+    """A TTS stand-in that records what it was asked to say."""
+
+    name = "counting"
+
+    def __init__(self, prefers_whole_block: bool) -> None:
+        self.prefers_whole_block = prefers_whole_block
+        self.calls: list[str] = []
+
+    async def list_voices(self) -> list[str]:
+        return ["test"]
+
+    async def synthesize(self, text, voice, out_path):
+        from app.providers.base import AudioResult
+
+        self.calls.append(text)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(b"")
+        return AudioResult(
+            path=out_path, duration_seconds=2.0, sample_rate=24000,
+            provider=self.name, voice="test", model="test",
+        )
+
+
+async def revise_first_video_for(session, project) -> None:
+    from app.services.revise_first_video import revise_first_video
+
+    await revise_first_video(session, project)
+    await session.commit()
+
+
+async def _current_script(session, project) -> Script:
+    """Re-select rather than reuse a returned object.
+
+    A commit expires it, and `script.scenes` would then lazy-load outside the
+    async context. `produce()` re-selects for the same reason.
+    """
+    return (
+        await session.execute(
+            select(Script).where(Script.project_id == project.id, Script.is_current.is_(True))
+        )
+    ).scalar_one()
+
+
+async def _run_narration(session, monkeypatch, provider, tmp_path: Path) -> tuple[list, object]:
+    from app.services import production
+
+    project = await seed_first_video(session)
+    await revise_first_video_for(session, project)
+    script = await _current_script(session, project)
+
+    monkeypatch.setattr(production, "ResilientTTS", lambda **kw: provider)
+    # Write into the test's own directory. `project_dir` resolves under
+    # MEDIA_ROOT, which in a container is the real media volume — a test has no
+    # business leaving stub audio in there next to genuine renders.
+    monkeypatch.setattr(production, "project_dir", lambda project_id: tmp_path / str(project_id))
+    # Block preparation shells out to ffmpeg; this test is about how many
+    # requests are made and what they contain, not about audio processing.
+    monkeypatch.setattr(production, "_prepare_block", _fixed_duration)
+    monkeypatch.setattr(production, "_concat_segments", _noop_concat)
+
+    parts = await production.synthesize_narration(session, project, script)
+    return parts, script
+
+
+async def _fixed_duration(path) -> float:
+    return 2.0
+
+
+async def _noop_concat(parts, out_path, tail: float = 0.0) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_bytes(b"")
+
+
+async def test_whole_block_provider_gets_one_request_per_scene(
+    session, monkeypatch, tmp_path: Path
+) -> None:
+    """The reason this matters: Gemini's preview tier allows a couple of
+    requests per minute, and clause-level synthesis made fourteen of them for a
+    five-scene Short."""
+    provider = _CountingTTS(prefers_whole_block=True)
+    parts, script = await _run_narration(session, monkeypatch, provider, tmp_path)
+
+    scenes = sorted(script.scenes, key=lambda s: s.scene_number)
+    assert len(provider.calls) == len(scenes) == len(parts)
+    assert 3 <= len(provider.calls) <= 5, "a Short should be a handful of semantic blocks"
+
+
+async def test_each_block_is_a_whole_scene_of_narration(
+    session, monkeypatch, tmp_path: Path
+) -> None:
+    """Not one flat paragraph, and not one clause at a time: one beat at a time,
+    with its punctuation intact so the model can find the rhythm itself."""
+    provider = _CountingTTS(prefers_whole_block=True)
+    _, script = await _run_narration(session, monkeypatch, provider, tmp_path)
+
+    scenes = sorted(script.scenes, key=lambda s: s.scene_number)
+    assert provider.calls == [s.narration for s in scenes]
+    assert any(text.count(".") + text.count("?") > 1 for text in provider.calls), (
+        "blocks should contain multiple sentences, or they are not semantic blocks"
+    )
+
+
+async def test_clause_provider_still_gets_segmented_text(
+    session, monkeypatch, tmp_path: Path
+) -> None:
+    """Kokoro's cadence needs the pipeline to shape its pauses, so the old
+    segment-level path must survive for the fallback."""
+    provider = _CountingTTS(prefers_whole_block=False)
+    _, script = await _run_narration(session, monkeypatch, provider, tmp_path)
+
+    assert len(provider.calls) > len(script.scenes)
+    for text in provider.calls:
+        assert text.strip()
+
+
+# ------------------------------------------------------ one voice per video ---
+class _FailsAfter(_CountingTTS):
+    """Succeeds for `ok` blocks, then behaves like a spent quota."""
+
+    name = "flaky-primary"
+
+    def __init__(self, ok: int) -> None:
+        super().__init__(prefers_whole_block=True)
+        self.ok = ok
+
+    async def synthesize(self, text, voice, out_path):
+        from app.core.errors import QuotaExhaustedError
+
+        if len(self.calls) >= self.ok:
+            self.calls.append(text)
+            raise QuotaExhaustedError("daily quota spent")
+        return await super().synthesize(text, voice, out_path)
+
+
+async def test_a_mid_render_failure_re_reads_the_whole_script(
+    session, monkeypatch, tmp_path: Path
+) -> None:
+    """The defect this prevents: scene 1 in one voice, scenes 2-5 in another.
+
+    Falling back per block is locally correct and globally unusable — a narrator
+    that changes a quarter of the way through is worse than either voice used
+    throughout. The whole script is re-read instead.
+    """
+    from app.services import production
+
+    primary = _FailsAfter(ok=1)
+    fallback = _CountingTTS(prefers_whole_block=False)
+
+    project = await seed_first_video(session)
+    await revise_first_video_for(session, project)
+    script = await _current_script(session, project)
+
+    monkeypatch.setattr(production, "ResilientTTS", lambda **kw: primary)
+    monkeypatch.setattr(production, "build_provider", lambda name: fallback)
+    monkeypatch.setattr(production, "project_dir", lambda pid: tmp_path / str(pid))
+    monkeypatch.setattr(production, "_prepare_block", _fixed_duration)
+    monkeypatch.setattr(production, "_concat_segments", _noop_concat)
+
+    parts = await production.synthesize_narration(session, project, script)
+
+    voices = {(p.provenance or {}).get("provider") for p in parts}
+    assert voices == {"counting"}, f"video must have one narrator, got {voices}"
+    assert all((p.provenance or {}).get("fallback_used") for p in parts)
+    assert all((p.provenance or {}).get("fallback_from") for p in parts)
+    # Every scene was re-read, not just the ones that failed.
+    assert len(fallback.calls) >= len(script.scenes)
+
+
+async def test_no_fallback_configured_surfaces_the_failure(
+    session, monkeypatch, tmp_path: Path
+) -> None:
+    """With TTS_FALLBACK_PROVIDER=none there is no second voice to switch to."""
+    from app.core.errors import RetryableError
+    from app.services import production
+
+    primary = _FailsAfter(ok=0)
+
+    project = await seed_first_video(session)
+    await revise_first_video_for(session, project)
+    script = await _current_script(session, project)
+
+    monkeypatch.setattr(production.settings, "TTS_FALLBACK_PROVIDER", "none")
+    monkeypatch.setattr(production, "ResilientTTS", lambda **kw: primary)
+    monkeypatch.setattr(production, "project_dir", lambda pid: tmp_path / str(pid))
+    monkeypatch.setattr(production, "_prepare_block", _fixed_duration)
+
+    with pytest.raises(RetryableError):
+        await production.synthesize_narration(session, project, script)

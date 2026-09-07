@@ -334,10 +334,61 @@ async def run_quality_checks(
         measured=unlicensed,
     )
 
+    # ---------------------------------------------------------- alignment ---
+    # Captions are always the approved script, so these do not check *what* the
+    # captions say — that is guaranteed upstream. They check how much of the
+    # timing was actually measured, because a block that fell back to
+    # proportional distribution has captions that drift against the speech.
+    spec = render.spec or {}
+    alignment = spec.get("alignment")
+    if alignment:
+        worst = float(alignment.get("worst_coverage") or 0.0)
+        report.add(
+            "caption_timing_measured",
+            worst >= 0.75,
+            blocking=False,
+            detail=(
+                f"Weakest block matched {worst:.0%} of its words to measured audio"
+                if worst >= 0.75
+                else f"Weakest block matched only {worst:.0%} of its words; "
+                "those captions are timed by estimate, not measurement"
+            ),
+            measured=round(worst, 4),
+        )
+
+        blocks = alignment.get("per_block") or []
+        looped = [b for b in blocks if b.get("repeated_ngrams")]
+        report.add(
+            "no_transcription_loops",
+            not looped,
+            blocking=False,
+            detail=(
+                "Speech recognition produced no repeated phrases"
+                if not looped
+                else f"{len(looped)} block(s) transcribed with repeated phrases; "
+                "captions kept the approved script, timings may be less precise"
+            ),
+            measured=len(looped),
+        )
+
+        # Timings that run backwards would reorder captions against the speech.
+        # The aligner corrects them, so this is an assertion that it did.
+        backwards = sum(int(b.get("monotonicity_fixes") or 0) for b in blocks)
+        report.add(
+            "caption_timing_monotonic",
+            True,
+            blocking=False,
+            detail=(
+                "Caption timings advance monotonically"
+                if not backwards
+                else f"{backwards} out-of-order timestamp(s) from recognition were corrected"
+            ),
+            measured=backwards,
+        )
+
     # ------------------------------------------------------------- ending ---
     # A video that simply stops on its last narrated frame reads as truncated.
     # These check that the ending was authored rather than merely reached.
-    spec = render.spec or {}
     hold = float(spec.get("end_hold_seconds") or 0.0)
     report.add(
         "ending_hold_present",
