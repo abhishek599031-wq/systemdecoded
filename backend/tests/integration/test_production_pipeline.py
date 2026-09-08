@@ -499,7 +499,12 @@ async def test_clause_provider_still_gets_segmented_text(
 
 # ------------------------------------------------------ one voice per video ---
 class _FailsAfter(_CountingTTS):
-    """Succeeds for `ok` blocks, then behaves like a spent quota."""
+    """Succeeds for `ok` blocks, then fails transiently.
+
+    A *transient* failure on purpose. Daily quota exhaustion takes a stricter
+    path — it blocks the render rather than switching voice — and is covered in
+    tests/integration/test_quota_preflight.py.
+    """
 
     name = "flaky-primary"
 
@@ -508,11 +513,11 @@ class _FailsAfter(_CountingTTS):
         self.ok = ok
 
     async def synthesize(self, text, voice, out_path):
-        from app.core.errors import QuotaExhaustedError
+        from app.core.errors import RetryableError
 
         if len(self.calls) >= self.ok:
             self.calls.append(text)
-            raise QuotaExhaustedError("daily quota spent")
+            raise RetryableError("503 from the service")
         return await super().synthesize(text, voice, out_path)
 
 

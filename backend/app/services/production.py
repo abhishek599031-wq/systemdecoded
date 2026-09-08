@@ -35,7 +35,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.clock import utcnow
-from app.core.errors import RetryableError, TerminalError
+from app.core.errors import (
+    QuotaBlockedError,
+    QuotaExhaustedError,
+    RetryableError,
+    TerminalError,
+)
 from app.core.logging import get_logger
 from app.core.narration import SYSTEMDECODED_DIRECTION
 from app.models.content import (
@@ -58,8 +63,10 @@ from app.providers.compositor import captions as caption_builder
 from app.providers.compositor.ffmpeg import FFmpegCompositor
 from app.providers.renderer.playwright_frames import PlaywrightFrameRenderer
 from app.providers.tts.resolver import ResilientTTS, build_provider, voice_for
+from app.services import quota
 from app.services.canonical_alignment import AlignmentQuality, align_to_canonical
-from app.services.prosody import segment_narration
+from app.services.narration_plan import NarrationPlan, build_narration_plan
+from app.services.quota import QuotaDecision
 
 log = get_logger("production")
 
@@ -247,8 +254,42 @@ async def _prepare_block(path: Path) -> float:
     return duration
 
 
+def build_plan_for(script: Script, tts, voice: VoiceSpec) -> NarrationPlan:
+    """The narration plan for a script, as a given provider would speak it."""
+    return build_narration_plan(
+        list(script.scenes),
+        whole_block=getattr(tts, "prefers_whole_block", False),
+        provider=getattr(tts, "primary_name", None) or getattr(tts, "name", "unknown"),
+        voice=voice.voice,
+        model=settings.GEMINI_TTS_MODEL if settings.TTS_PROVIDER == "gemini" else None,
+    )
+
+
+async def plan_and_preflight(
+    session: AsyncSession, script: Script
+) -> tuple[NarrationPlan, QuotaDecision]:
+    """Work out what the render will ask for, and whether it can be delivered.
+
+    Exposed separately from `produce` so a caller can decide *not to start* —
+    the job runner checks this before moving a project into RENDERING, which
+    keeps a quota-blocked project sitting at ASSETS_READY rather than marking it
+    failed for something that will be fine tomorrow.
+    """
+    primary = ResilientTTS(fallback=None)
+    voice = voice_for(settings.TTS_PROVIDER)
+    plan = build_plan_for(script, primary, voice)
+    decision = await quota.preflight(
+        session, settings.TTS_PROVIDER, plan.model, plan.request_count
+    )
+    return plan, decision
+
+
 async def synthesize_narration(
-    session: AsyncSession, project: ContentProject, script: Script, voice: VoiceSpec | None = None
+    session: AsyncSession,
+    project: ContentProject,
+    script: Script,
+    voice: VoiceSpec | None = None,
+    plan: NarrationPlan | None = None,
 ) -> list[SceneAudio]:
     """Synthesize narration one semantic block per scene, and measure it.
 
@@ -268,9 +309,9 @@ async def synthesize_narration(
     Either way the caller gets the same thing: one measured audio file per
     scene.
     """
-    scenes = sorted(script.scenes, key=lambda s: s.scene_number)
-    if not scenes:
-        raise TerminalError("Script has no scenes")
+    primary = ResilientTTS(fallback=None)
+    voice = voice or voice_for(settings.TTS_PROVIDER)
+    plan = plan or build_plan_for(script, primary, voice)
 
     # Fall back per *video*, never per block.
     #
@@ -285,10 +326,27 @@ async def synthesize_narration(
     # whole script, the whole script is re-read by the fallback, and the video
     # has one narrator either way. `TerminalError` still propagates untouched:
     # a configuration mistake must not be answered by switching provider.
-    primary = ResilientTTS(fallback=None)
-    voice = voice or voice_for(settings.TTS_PROVIDER)
     try:
-        return await _synthesize_blocks(session, project, scenes, primary, voice)
+        return await _synthesize_blocks(session, project, plan, primary, voice)
+    except QuotaExhaustedError as exc:
+        # Not a transient failure, and not something a fallback should paper
+        # over. The chosen voice is part of the deliverable; quietly producing
+        # the whole video in the fallback voice would waste a render nobody
+        # asked for. The preflight normally catches this before a single
+        # request — reaching here means the allowance was spent by something
+        # outside this system, so record it and stop.
+        raise QuotaBlockedError(
+            f"Render stopped: {exc}",
+            detail={
+                "state": "INSUFFICIENT",
+                "provider": plan.provider,
+                "model": plan.model,
+                "voice": plan.voice,
+                "required_requests": plan.request_count,
+                "reason": str(exc)[:300],
+                "discovered": "mid-render",
+            },
+        ) from exc
     except RetryableError as exc:
         if settings.TTS_FALLBACK_PROVIDER == "none":
             raise
@@ -300,8 +358,9 @@ async def synthesize_narration(
             reason=str(exc)[:300],
             note="whole narration re-read so the video has a single voice",
         )
+        fallback_plan = build_plan_for(script, fallback, voice_for(settings.TTS_FALLBACK_PROVIDER))
         return await _synthesize_blocks(
-            session, project, scenes, fallback,
+            session, project, fallback_plan, fallback,
             voice_for(settings.TTS_FALLBACK_PROVIDER),
             fallback_from=settings.TTS_PROVIDER,
             fallback_reason=str(exc)[:300],
@@ -311,14 +370,20 @@ async def synthesize_narration(
 async def _synthesize_blocks(
     session: AsyncSession,
     project: ContentProject,
-    scenes: list[Scene],
+    plan: NarrationPlan,
     tts,
     voice: VoiceSpec,
     fallback_from: str | None = None,
     fallback_reason: str | None = None,
 ) -> list[SceneAudio]:
-    """Read every block with one provider, and measure what comes back."""
-    whole_block = getattr(tts, "prefers_whole_block", False)
+    """Speak the plan with one provider, and measure what comes back.
+
+    The plan decides what is said and in how many requests; this only performs
+    it. That separation is what lets the quota preflight count the requests in
+    advance and be right — there is no second place where the splitting
+    decision gets made.
+    """
+    whole_block = plan.whole_block
     out_dir = project_dir(project.id) / "audio"
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -326,29 +391,23 @@ async def _synthesize_blocks(
     used_fallback = False
     calls = 0
     cursor = 0.0
-    for scene in scenes:
-        props = scene.template_props or {}
+    for block in plan.blocks:
+        scene = block.scene
         scene_path = out_dir / f"scene_{scene.scene_number:02d}.wav"
 
         if whole_block:
-            if not scene.narration.strip():
-                raise TerminalError(f"Scene {scene.scene_number} has no speakable narration")
-            result = await tts.synthesize(scene.narration, voice, scene_path)
+            unit = block.units[0]
+            result = await tts.synthesize(unit.text, voice, scene_path)
             calls += 1
             used_fallback = used_fallback or result.fallback_used
             last_result = result
             duration = await _prepare_block(scene_path)
             parts = [SegmentAudio(path=scene_path, duration=duration, pause_after=0.0)]
         else:
-            reveals = frozenset(props.get("reveal_segments") or [])
-            segments = segment_narration(scene.narration, reveal_indexes=reveals)
-            if not segments:
-                raise TerminalError(f"Scene {scene.scene_number} has no speakable narration")
-
             parts = []
-            for index, segment in enumerate(segments):
+            for index, unit in enumerate(block.units):
                 seg_path = out_dir / f"scene_{scene.scene_number:02d}_s{index:02d}.wav"
-                result = await tts.synthesize(segment.text, voice, seg_path)
+                result = await tts.synthesize(unit.text, voice, seg_path)
                 calls += 1
                 used_fallback = used_fallback or result.fallback_used
                 last_result = result
@@ -356,13 +415,13 @@ async def _synthesize_blocks(
                     SegmentAudio(
                         path=seg_path,
                         duration=result.duration_seconds,
-                        pause_after=segment.pause_seconds,
+                        pause_after=unit.pause_after,
                     )
                 )
             await _concat_segments(parts, scene_path)
             duration = sum(p.duration + p.pause_after for p in parts)
 
-        is_last = scene is scenes[-1]
+        is_last = block is plan.blocks[-1]
         hold = settings.END_HOLD_SECONDS if is_last else 0.0
         gap = 0.0 if is_last else INTER_SCENE_GAP
 
@@ -778,8 +837,8 @@ async def compose_video(
 
 
 # --------------------------------------------------------------- full run ---
-async def produce(session: AsyncSession, project: ContentProject) -> VideoRender:
-    """Run the whole pipeline for a project's current script."""
+async def current_script(session: AsyncSession, project: ContentProject) -> Script:
+    """The script a render would use. Re-selected, never taken from a stale object."""
     script = (
         await session.execute(
             select(Script).where(Script.project_id == project.id, Script.is_current.is_(True))
@@ -787,6 +846,26 @@ async def produce(session: AsyncSession, project: ContentProject) -> VideoRender
     ).scalar_one_or_none()
     if script is None:
         raise TerminalError("Project has no current script")
+    return script
+
+
+async def produce(session: AsyncSession, project: ContentProject) -> VideoRender:
+    """Run the whole pipeline for a project's current script."""
+    script = await current_script(session, project)
+
+    # Quota preflight, before anything is generated.
+    #
+    # This is the first thing the pipeline does, and it runs here rather than
+    # only in the job runner so that no caller can skip it. If the provider
+    # cannot cover the whole narration, the render must not start at all: not
+    # one synthesis request, not one fallback request, no partial audio.
+    plan, decision = await plan_and_preflight(session, script)
+    log.info("production.quota_preflight", **{**plan.as_metadata(), **decision.as_detail()})
+    if not decision.allowed:
+        raise QuotaBlockedError(
+            f"Render blocked before it started: {decision.reason}",
+            detail={**decision.as_detail(), "voice": plan.voice, "discovered": "preflight"},
+        )
 
     # A clean slate per run: stale frames from a previous attempt silently
     # ending up in a new video is a genuinely confusing failure.
@@ -794,7 +873,7 @@ async def produce(session: AsyncSession, project: ContentProject) -> VideoRender
     if work.exists():
         shutil.rmtree(work / "_work", ignore_errors=True)
 
-    parts = await synthesize_narration(session, project, script)
+    parts = await synthesize_narration(session, project, script, plan=plan)
     narration = await concat_narration(session, project, parts)
     aligned = await align_narration(session, project, parts)
     subtitles = await build_captions(session, project, aligned)

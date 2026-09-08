@@ -34,6 +34,7 @@ from app.models.enums import (
     RenderStatus,
 )
 from app.models.job import BackgroundJob, JobEvent
+from app.models.quota import ProviderQuotaUsage
 from app.models.youtube import OAuthState, YouTubeConnection
 
 __all__ = [
@@ -53,6 +54,7 @@ __all__ = [
     "ProjectStatus",
     "ProjectTransition",
     "ProviderMode",
+    "ProviderQuotaUsage",
     "PublishState",
     "PublishedVideo",
     "PublishingJob",

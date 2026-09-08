@@ -31,6 +31,7 @@ Next.js studio, and YouTube OAuth with encrypted tokens.
 - [Scheduler](#scheduler)
 - [Job architecture](#job-architecture)
 - [Media production](#media-production)
+- [Quota preflight](#quota-preflight--a-render-that-cannot-finish-never-starts)
 - [Semantic narration blocks](#semantic-narration-blocks)
 - [Alignment: the script is the source of truth](#alignment-the-script-is-the-source-of-truth)
 - [Narration providers](#narration-providers)
@@ -593,6 +594,7 @@ Coverage of the foundation:
 | **Canonical alignment** | **Repeated ASR text never duplicates a caption, invented words never appear, missing words interpolate, timings stay monotonic** |
 | Narration profile | Config defaults match the profile, the selected voice exists on the provider |
 | Gemini rate limits | `RetryInfo` delay honoured, backoff outlasts a 60s window, pacing spaces requests |
+| **Quota preflight** | **Insufficient quota blocks with zero TTS calls of either provider; the plan's count matches what the renderer asks for; unknown quota blocks; a blocked job leaves the project ready, not failed** |
 | Publishing | MANUAL_HANDOFF default, idempotent packages, one live job per project, idempotent reconciliation |
 | **Real render** | **`-m media`: Kokoro + Whisper + Chromium + FFmpeg produce an actual 1080×1920 MP4** |
 
@@ -929,6 +931,68 @@ for what was only ever a short wait.
 
 Enabling billing on the Google Cloud project removes the daily cap; set
 `GEMINI_MIN_REQUEST_INTERVAL_SECONDS=0` at the same time.
+
+#### Quota preflight — a render that cannot finish never starts
+
+A render asked Gemini for five narration blocks. Block one succeeded, the daily
+allowance ran out, and the rest came from the fallback. Every component behaved
+correctly and the video was still not the one that had been asked for.
+
+So before any audio is generated, the pipeline works out what it is about to
+request and whether that can be delivered:
+
+```
+build narration plan  ──►  request count (counted, not estimated)
+                                  │
+                           quota preflight
+                                  │
+                    ┌─────────────┴─────────────┐
+              SUFFICIENT                  INSUFFICIENT / UNKNOWN
+                    │                            │
+              render runs              blocked — zero TTS calls,
+                                       zero fallback calls, no audio
+```
+
+**The count comes from the plan, not an estimate.** `app/services/narration_plan.py`
+builds the list of units that will actually be spoken; the preflight counts them
+and the renderer speaks them. There is one splitting decision, so the two cannot
+disagree — a preflight that approved five requests while the renderer made seven
+would be worthless.
+
+**Where it runs.** Twice, deliberately. `produce_video` checks before moving the
+project into `RENDERING`, so a blocked project stays at `ASSETS_READY` — ready to
+retry tomorrow rather than marked `FAILED` for something that is not broken.
+`production.produce()` checks again as the first thing it does, so no caller can
+skip the gate.
+
+**How remaining quota is known.** Not from the API — Gemini exposes no endpoint
+or header reporting it, and points you at the AI Studio dashboard, which a job
+cannot read. So the accounting is ours: `provider_quota_usage` holds one row per
+(provider, model, quota day), incremented by the provider on every response.
+The day is a **Pacific** date, because that is when RPD quotas reset; using UTC
+would report a fresh allowance for the last seven hours of the provider's day.
+
+| State | Meaning | Result |
+|---|---|---|
+| `SUFFICIENT` | The remaining allowance covers the whole render | Render runs |
+| `INSUFFICIENT` | It does not, or the API has said the day is spent | Blocked |
+| `UNKNOWN` | The limit or the ledger cannot be read | **Blocked** |
+
+`UNKNOWN` blocks on purpose. An unreadable ledger is not evidence of available
+quota, and for unattended operation, declining a render that would have worked
+costs far less than a half-narrated one nobody is awake to notice.
+
+**What it cannot know.** Requests made outside this system — in AI Studio, or by
+another project on the same key — are invisible, so the count is a lower bound.
+The backstop is the provider's own rejection: the first daily-quota 429 pins the
+day shut (`exhausted_at`), and every later preflight blocks at zero cost. That
+rejection also carries the real `quotaValue`, which is trusted over the
+configured limit.
+
+**Quota exhaustion does not fall back.** If the allowance runs out mid-render
+anyway, the render stops rather than re-reading the whole script in a voice
+nobody chose. Transient failures (429 rate limit, 5xx, timeouts) still fall back
+exactly as before — that distinction is the point.
 
 #### One narrator per video
 
@@ -1278,7 +1342,11 @@ Change `POSTGRES_PORT`, `BACKEND_PORT` or `FRONTEND_PORT` in `.env`.
 - **Gemini narration is capped at 10 requests per day** on the free tier for
   `gemini-3.1-flash-tts`. A five-block Short costs five, so the free tier allows two
   renders per day, and a set of voice auditions costs five more. Enable billing to
-  remove the cap. This is a hard blocker on re-rendering, not a slowdown.
+  remove the cap. The quota preflight now refuses to start a render it cannot finish,
+  so this is a clean block rather than a half-narrated video.
+- **Quota accounting cannot see requests made outside this system.** Anything spent in
+  AI Studio, or on the same key by another project, is invisible to the ledger, so its
+  count is a lower bound. The provider's own daily-quota rejection is the backstop.
 - **Speech recognition still hallucinates on clean TTS audio.** It cannot corrupt caption
   *text* — the approved script is canonical — but a block whose transcription loops badly
   gets less precise caption *timing*, and QC reports that rather than hiding it.

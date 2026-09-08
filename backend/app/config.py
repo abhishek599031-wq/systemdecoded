@@ -101,6 +101,12 @@ class Settings(BaseSettings):
     # fired back-to-back is rate-limited on everything after the first. Set to
     # 0 on a paid tier.
     GEMINI_MIN_REQUEST_INTERVAL_SECONDS: float = Field(default=30.0, ge=0)
+    # Requests per day allowed for the TTS model. The API reports no remaining
+    # allowance, so a render's quota preflight counts against this figure
+    # (app/services/quota.py). 10 is the free tier for gemini-3.1-flash-tts —
+    # about two Shorts per day. Set to 0 once billing is enabled, which removes
+    # the cap and the preflight with it.
+    GEMINI_TTS_DAILY_REQUEST_LIMIT: int = Field(default=10, ge=0)
 
     # Kokoro settings (the local, zero-cost provider).
     TTS_VOICE: str = "am_puck"

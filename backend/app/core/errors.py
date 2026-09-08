@@ -127,6 +127,23 @@ class QuotaExhaustedError(RetryableError):
     """
 
 
+class QuotaBlockedError(TerminalError):
+    """A render was refused because the provider cannot finish it.
+
+    Terminal on purpose. The condition is real and will not clear on the job
+    queue's timescale — a daily allowance resets tomorrow, not in thirty
+    seconds — so retrying is only a way of discovering the same thing again.
+    The render is meant to be re-queued once quota returns.
+
+    `detail` carries the preflight's own verdict, so the reason reaches a job
+    result and the UI without being reconstructed from a message string.
+    """
+
+    def __init__(self, message: str, *, detail: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.detail = detail or {}
+
+
 class JobTimeoutError(RetryableError):
     """A job exceeded its declared timeout budget."""
 

@@ -51,6 +51,30 @@ async def produce_video(ctx: JobContext) -> dict[str, Any]:
             "Approve the script first."
         )
 
+    # Quota preflight, before the project is moved into RENDERING.
+    #
+    # Checked here as well as inside `produce()` for one reason: a render the
+    # provider cannot finish should leave the project exactly as it was, ready
+    # to try again once quota returns. Marking it FAILED would be wrong — the
+    # project is fine, the allowance is not — and moving it to RENDERING first
+    # would require unwinding a state change for a render that never began.
+    script = await production.current_script(ctx.session, project)
+    plan, decision = await production.plan_and_preflight(ctx.session, script)
+    if not decision.allowed:
+        detail = {**decision.as_detail(), "voice": plan.voice}
+        ctx.logger.warning("content.render_blocked", **detail)
+        project.failure_reason = decision.reason[:2000]
+        return {
+            **detail,
+            # Machine-readable code last, so it cannot be shadowed by the
+            # decision's own human-readable `reason` text.
+            "status": "BLOCKED",
+            "reason": "TTS_QUOTA_INSUFFICIENT",
+            "message": decision.reason,
+            "advanced_to_review": False,
+            "render_id": None,
+        }
+
     if project.status != ProjectStatus.RENDERING:
         if project.status == ProjectStatus.PRODUCTION_PLANNING:
             await transition(ctx.session, project, ProjectStatus.ASSETS_READY,

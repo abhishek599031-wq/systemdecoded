@@ -46,6 +46,7 @@ from app.providers.tts.direction import (
     VoiceDirection,
     build_prompt,
 )
+from app.services import quota
 
 log = get_logger("tts.gemini")
 
@@ -164,9 +165,21 @@ class GeminiTTS:
             # The service still sends a RetryInfo of a few seconds here, but it
             # is meaningless against a per-day quota — waiting it out cannot
             # succeed. Say so, so the caller stops retrying immediately.
+            #
+            # Recorded rather than merely raised: this is the only fully
+            # reliable statement about the day's allowance, and pinning it shut
+            # lets every later preflight block without spending a request to
+            # rediscover it.
+            await quota.mark_exhausted(self.name, self.model, _quota_limit(response))
             raise QuotaExhaustedError(
                 f"Gemini daily quota exhausted for {self.model}: {_reason(response)}"
             )
+
+        # Counted for any other outcome, success or failure. A rejected request
+        # may still have been counted on their side, and a preflight that
+        # overstates consumption declines a render that would have worked —
+        # which is the cheaper mistake.
+        await quota.record_request(self.name, self.model)
         if response.status_code in TRANSIENT_STATUSES:
             raise RetryableError(
                 f"Gemini returned {response.status_code} "
@@ -320,6 +333,26 @@ def peak_amplitude(pcm: bytes) -> float:
     count = len(pcm) // 2
     samples = struct.unpack(f"<{count}h", pcm[: count * 2])
     return max(abs(min(samples)), abs(max(samples))) / 32768.0
+
+
+def _quota_limit(response: httpx.Response) -> int | None:
+    """The daily allowance the API just told us it enforces.
+
+    More trustworthy than anything configured — it is the tier we are actually
+    on, and it notices a change without an edit to `.env`.
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    for detail in (body.get("error") or {}).get("details") or []:
+        for violation in detail.get("violations") or []:
+            if "PerDay" in str(violation.get("quotaId", "")):
+                try:
+                    return int(violation["quotaValue"])
+                except (KeyError, TypeError, ValueError):
+                    return None
+    return None
 
 
 def _daily_quota_spent(response: httpx.Response) -> bool:
