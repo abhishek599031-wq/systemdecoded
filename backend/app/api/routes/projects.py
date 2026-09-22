@@ -33,7 +33,8 @@ from app.models.content import (
     VideoRender,
 )
 from app.models.enums import ProjectStatus
-from app.services import publishing
+from app.schemas.project import ManualPublicationConfirmation
+from app.services import publication_reconciliation, publishing
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -241,6 +242,9 @@ async def get_project(
             {
                 "youtube_video_id": published.youtube_video_id,
                 "url": f"https://www.youtube.com/watch?v={published.youtube_video_id}",
+                "title": published.title,
+                "published_at": published.published_at.isoformat(),
+                "privacy_status": published.privacy_status,
                 "reconciled_at": published.reconciled_at.isoformat()
                 if published.reconciled_at
                 else None,
@@ -388,23 +392,20 @@ async def review(
 @router.post("/{project_id}/published", summary="Record the manually uploaded video")
 async def record_published(
     project_id: uuid.UUID,
-    body: dict[str, Any],
+    body: ManualPublicationConfirmation,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict[str, Any]:
-    """Associate a YouTube video ID with this project after a manual upload."""
+    """Verify and reconcile a manually uploaded video with this project."""
     project = await _get_project(db, project_id)
-    video_id = str(body.get("youtube_video_id", "")).strip()
-    if not video_id:
-        raise ValidationError("youtube_video_id is required")
-
-    published = await publishing.record_published_video(
-        db, project, video_id, method="manual_confirmation"
+    published = await publication_reconciliation.reconcile_manual_publication(
+        db, project, body.youtube_video_id
     )
-    if project.status == ProjectStatus.AWAITING_HUMAN_UPLOAD:
-        await transition(db, project, ProjectStatus.PUBLISHED, actor="HUMAN",
-                         reason=f"Manually uploaded as {video_id}")
     return {
-        "status": project.status,
+        "status": ProjectStatus.PUBLISHED,
         "youtube_video_id": published.youtube_video_id,
         "url": f"https://www.youtube.com/watch?v={published.youtube_video_id}",
+        "title": published.title,
+        "published_at": published.published_at.isoformat(),
+        "privacy_status": published.privacy_status,
+        "reconciliation_method": published.reconciliation_method,
     }

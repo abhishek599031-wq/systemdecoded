@@ -1,6 +1,8 @@
 """Integration test fixtures — require a live PostgreSQL instance.
 
-Skipped with a clear reason rather than failed when one is not reachable.
+Ad-hoc unit-focused runs may skip when PostgreSQL is absent. The documented
+integration command sets ``REQUIRE_TEST_DATABASE=true``, turning an unavailable
+database into a hard failure so CI cannot report a false-green skipped suite.
 """
 
 from __future__ import annotations
@@ -86,10 +88,13 @@ def database() -> None:
         with psycopg.connect(_dsn(TEST_DATABASE_URL, "postgres"), connect_timeout=3):
             pass
     except Exception as exc:  # noqa: BLE001 - becomes a skip reason
-        pytest.skip(
+        message = (
             f"PostgreSQL not reachable at {TEST_DATABASE_URL} ({exc}). "
-            "Start it with: docker compose up -d postgres"
+            "Run the documented docker-compose.test.yml command."
         )
+        if os.environ.get("REQUIRE_TEST_DATABASE", "").lower() in {"1", "true", "yes"}:
+            pytest.fail(message)
+        pytest.skip(message)
     _ensure_database()
     _run_migrations()
 

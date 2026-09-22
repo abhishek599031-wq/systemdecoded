@@ -8,7 +8,7 @@ revoked token from being retried 3 times against Google.
 
 from __future__ import annotations
 
-from app.core.errors import AppError, RetryableError, TerminalError
+from app.core.errors import AppError, ConflictError, NotFoundError, RetryableError, TerminalError
 
 __all__ = [
     "GoogleAPIError",
@@ -19,6 +19,8 @@ __all__ = [
     "RateLimitedError",
     "TransientGoogleError",
     "YouTubeNotConnectedError",
+    "YouTubeVideoNotFoundError",
+    "YouTubeVideoOwnershipError",
 ]
 
 
@@ -79,6 +81,20 @@ class NoChannelError(AppError):
     message = (
         "That Google account has no YouTube channel. Create one, then reconnect."
     )
+
+
+class YouTubeVideoNotFoundError(NotFoundError):
+    """A supplied video ID cannot be resolved through the connected account."""
+
+    code = "youtube_video_not_found"
+    message = "The YouTube video was not found or is not visible to the connected account."
+
+
+class YouTubeVideoOwnershipError(ConflictError):
+    """The video exists, but belongs to a different YouTube channel."""
+
+    code = "youtube_video_wrong_channel"
+    message = "The video does not belong to the connected SystemDecoded channel."
 
 
 # Google returns these in error.errors[].reason for rate limiting.

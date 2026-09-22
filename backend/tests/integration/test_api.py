@@ -59,10 +59,16 @@ async def test_system_status_reports_integrations_honestly(client: AsyncClient) 
     assert integrations["llm"]["status"] == "not_implemented_until_phase_4"
 
 
-async def test_system_info_declares_no_capabilities_yet(client: AsyncClient) -> None:
+async def test_system_info_reports_implemented_phase_2_capabilities(
+    client: AsyncClient,
+) -> None:
     body = (await client.get("/api/v1/system/info")).json()
-    assert body["phase"] == 0
-    assert not any(body["capabilities"].values())
+    assert body["phase"] == "2.5"
+    assert body["capabilities"]["youtube_oauth"] is True
+    assert body["capabilities"]["media_production"] is True
+    assert body["capabilities"]["manual_publication_reconciliation"] is True
+    assert body["capabilities"]["youtube_upload"] is False
+    assert body["capabilities"]["analytics"] is False
 
 
 # --------------------------------------------------------------------- jobs ---

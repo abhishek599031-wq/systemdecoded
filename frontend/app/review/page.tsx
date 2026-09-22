@@ -233,7 +233,7 @@ export default function ReviewPage() {
               <div className="text-sm font-medium text-signal">Ready for manual upload</div>
               <p className="mt-1 text-xs text-ink-300">
                 Upload the MP4 via YouTube Studio, then paste the video ID here so the system can
-                link it back to this project.
+                verify it belongs to the connected channel and link it to this project.
               </p>
               <div className="mt-2 flex gap-2">
                 <input
@@ -247,7 +247,7 @@ export default function ReviewPage() {
                     void act(
                       "publish",
                       () => api.recordPublished(detail.id, videoId.trim()),
-                      "Linked to the published video.",
+                      "Verified and linked to the published video.",
                     )
                   }
                   disabled={busy !== null || !videoId.trim()}

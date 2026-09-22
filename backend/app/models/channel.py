@@ -42,13 +42,13 @@ class Channel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     thumbnail_url: Mapped[str | None] = mapped_column(String(500))
 
     # contentDetails.relatedPlaylists.uploads. Captured now because Phase 2's
-    # MANUAL_HANDOFF reconciliation scans this playlist to match a manually
-    # uploaded video back to its project (ARCH §13.5), and it costs nothing to
-    # store while we are already calling channels.list.
+    # Available to a future conservative upload-discovery aid. Phase 2.5's
+    # deterministic MANUAL_HANDOFF flow uses a user-confirmed video ID instead
+    # of guessing from playlist title matches.
     uploads_playlist_id: Mapped[str | None] = mapped_column(String(64))
 
     # Snapshot of channel statistics from the last sync. Point-in-time only —
-    # historical analytics get their own age-bucketed tables in Phase 3.
+    # historical analytics get daily source-of-truth rows in Phase 3.
     subscriber_count: Mapped[int | None] = mapped_column(BigInteger)
     video_count: Mapped[int | None] = mapped_column(BigInteger)
     view_count: Mapped[int | None] = mapped_column(BigInteger)

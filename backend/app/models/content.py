@@ -447,17 +447,22 @@ class PublishedVideo(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     project_id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("content_project.id", ondelete="CASCADE"), nullable=False
     )
-    publishing_job_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    publishing_job_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("publishing_job.id", ondelete="SET NULL")
+    )
 
     # Unique, non-null: belt and braces against duplicate uploads.
     youtube_video_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     title: Mapped[str | None] = mapped_column(String(300))
-    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     privacy_status: Mapped[str | None] = mapped_column(String(20))
     reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    reconciliation_method: Mapped[str | None] = mapped_column(String(40))
+    reconciliation_method: Mapped[str] = mapped_column(String(40), nullable=False)
 
-    __table_args__ = (Index("ix_published_video_project", "project_id"),)
+    __table_args__ = (
+        UniqueConstraint("project_id", name="uq_published_video_project_id"),
+        Index("ix_published_video_project", "project_id"),
+    )
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<PublishedVideo {self.youtube_video_id}>"

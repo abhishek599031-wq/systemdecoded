@@ -4,7 +4,7 @@
 
 An autonomous YouTube content operations system for a technology edutainment channel.
 
-**Current status: Phase 2 — Content production. Complete.**
+**Current status: Phase 2.5 — Publication state hardening. Complete.**
 The system produces a finished, review-ready YouTube Short end to end: script →
 local TTS narration → timings measured from that audio → word-aligned captions →
 scene visuals rendered from HTML templates → FFmpeg composition → automated quality
@@ -136,7 +136,8 @@ graph LR
     B --> A
 ```
 
-Phase 0 implements the substrate all three run on. Full design:
+Phases 0–2.5 implement the substrate, production loop, and verified manual
+publication state. Full design:
 [docs/PHASE-1-ARCHITECTURE.md](docs/PHASE-1-ARCHITECTURE.md).
 
 ### Layering
@@ -206,7 +207,7 @@ free local fallback, so losing it degrades quality rather than stopping producti
 │   ├── pyproject.toml
 │   ├── Dockerfile
 │   ├── alembic.ini
-│   ├── alembic/versions/        # 0001_foundation … 0003_content_production
+│   ├── alembic/versions/        # 0001_foundation … 0005_publication_state_hardening
 │   ├── app/
 │   │   ├── main.py              # FastAPI app, error handlers, lifespan
 │   │   ├── config.py            # all environment configuration
@@ -214,10 +215,10 @@ free local fallback, so losing it degrades quality rather than stopping producti
 │   │   ├── db/                  # engine, session, declarative base
 │   │   ├── models/              # BackgroundJob, JobEvent, Channel, YouTubeConnection
 │   │   ├── schemas/             # Pydantic request/response
-│   │   ├── api/routes/          # health, system, jobs, channel, youtube
-│   │   ├── services/            # system_status, youtube_connection
+│   │   ├── api/routes/          # health, system, jobs, channel, youtube, projects
+│   │   ├── services/            # production, publishing, reconciliation, YouTube
 │   │   ├── jobs/                # queue, runner, worker, scheduler, registry, tasks
-│   │   ├── providers/           # (Phase 4) LLM/TTS/renderer adapters
+│   │   ├── providers/           # TTS, alignment, renderer, compositor adapters
 │   │   └── integrations/youtube/ # oauth, data_api, error classification
 │   └── tests/
 │       ├── unit/                # no infrastructure required
@@ -361,8 +362,8 @@ alembic upgrade head
 The initial migration seeds one `channel` row (deterministic UUID) so there is no
 startup race and no bootstrap step.
 
-Current head: `0003_content_production` — adds the content hierarchy: projects,
-transitions, research, scripts, scenes, assets, renders, quality checks and publishing.
+Current head: `0005_publication_state_hardening` — the content hierarchy, provider
+quota ledger, and project-scoped verified manual publication records.
 
 ---
 
@@ -416,12 +417,10 @@ handling that request carries the same `request_id`.
 
 ## Frontend
 
-Next.js 15 App Router on `:3000`. Phase 0 ships one screen — a dashboard showing system
-health, channel configuration, job counts, a live job table, and buttons that exercise
-the real queue.
-
-The remaining screens (Projects, Review Queue, Ideas & Planner, Channel) arrive with the
-data that makes them meaningful. Building empty screens teaches nothing.
+Next.js 15 App Router on `:3000`. The dashboard shows system and YouTube health, channel
+configuration, job counts, and live job history. The Review screen provides video/QC
+review, publishing metadata, and verified manual-upload reconciliation. Ideas/planning
+and analytics remain future phases.
 
 ```bash
 cd frontend
@@ -564,16 +563,22 @@ pytest --tb=short -q
 # the worker container and is skipped everywhere else.
 docker compose exec -e TEST_DATABASE_URL=postgresql+psycopg://systemdecoded:systemdecoded@postgres:5432/systemdecoded_test   worker pytest tests/ -m media
 
-# Integration tests need a database. Either:
-docker compose up -d postgres
-# or point them somewhere else:
-export TEST_DATABASE_URL=postgresql+psycopg://user:pass@localhost:5432/systemdecoded_test
+# Reliable PostgreSQL integration suite: isolated ephemeral database, real
+# migrations, and a hard failure (never a skip) if the database is unavailable.
+docker compose -f docker-compose.test.yml up --build \
+  --abort-on-container-exit --exit-code-from integration-test
+
+# Or point the same fail-closed suite at an existing test database:
+REQUIRE_TEST_DATABASE=true \
+TEST_DATABASE_URL=postgresql+psycopg://user:pass@localhost:5432/systemdecoded_test \
+pytest tests/integration -m "not media"
 ```
 
 Integration tests **create their own `systemdecoded_test` database and run the real
 Alembic migrations against it** — so the schema under test is the schema that ships, and
-every run exercises the migration. They are skipped with a clear reason, not failed, when
-no database is reachable.
+every run exercises the migration. The documented integration command sets
+`REQUIRE_TEST_DATABASE=true`, so an unreachable database fails rather than silently
+skipping the suite.
 
 Coverage of the foundation:
 
@@ -595,7 +600,7 @@ Coverage of the foundation:
 | Narration profile | Config defaults match the profile, the selected voice exists on the provider |
 | Gemini rate limits | `RetryInfo` delay honoured, backoff outlasts a 60s window, pacing spaces requests |
 | **Quota preflight** | **Insufficient quota blocks with zero TTS calls of either provider; the plan's count matches what the renderer asks for; unknown quota blocks; a blocked job leaves the project ready, not failed** |
-| Publishing | MANUAL_HANDOFF default, idempotent packages, one live job per project, idempotent reconciliation |
+| Publishing | MANUAL_HANDOFF default, verified channel ownership, authoritative metadata, project-scoped idempotent reconciliation |
 | **Real render** | **`-m media`: Kokoro + Whisper + Chromium + FFmpeg produce an actual 1080×1920 MP4** |
 
 ---
@@ -638,8 +643,8 @@ Coverage of the foundation:
 
 ### Not built yet — and honestly labelled in the UI
 
-Analytics · content pipeline · LLM providers · media production ·
-planner · experiments · insights.
+Analytics ingestion · LLM-assisted script generation · autonomous planner ·
+experiments · insights.
 
 ---
 
@@ -650,7 +655,7 @@ planner · experiments · insights.
 | **0** ✅ | Foundation | A job runs, retries, times out, and appears in history |
 | **1** ✅ | YouTube connection | Channel connects; metadata auto-populates; token survives refresh |
 | **2** ✅ | One real video, end to end | **One real Short published on the real channel** |
-| **3** | Analytics ingestion | Age-bucketed snapshots landing daily |
+| **3** | Analytics ingestion | Idempotent per-video daily metrics landing daily |
 | **4** | LLM-assisted generation | A script produced by the pipeline with one paste step |
 | **5** | Research & quality gates | Every claim traceable to a cited source |
 | **6** | Autonomous planner | A 5-video backlog maintained with no "generate" click |
@@ -743,9 +748,10 @@ regardless.
 **API uploads from an unaudited project are permanently locked to private, with no
 appeal.** Videos must be re-uploaded via a verified project or through YouTube itself. So
 V1 publishing is `MANUAL_HANDOFF`: the system produces the finished MP4 and metadata, you
-upload in ~60 seconds via Studio, and a reconciliation job matches the video back to the
-project by reading the uploads playlist. Reads are unrestricted, so analytics and the
-learning loop remain fully automatic.
+upload in ~60 seconds via Studio, then paste the video ID into the Review page. The
+application reads authoritative metadata from YouTube, verifies that the video belongs
+to the connected channel, and atomically reconciles it to that project. Automatic
+publishing remains disabled.
 
 ---
 

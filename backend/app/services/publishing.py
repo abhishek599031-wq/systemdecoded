@@ -3,14 +3,14 @@
 MANUAL_HANDOFF is the default and, for now, the only mode that can actually
 grow the channel: videos uploaded through the API from an unaudited Google
 Cloud project are permanently locked to private with no appeal. So the system
-produces a complete package, a human spends ~60 seconds uploading it, and a
-reconciliation job matches the result back to the project by reading the
-uploads playlist — a read call, which is unrestricted.
+produces a complete package, a human spends ~60 seconds uploading it, and the
+review workflow verifies the resulting video ID against the connected channel.
 """
 
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -128,8 +128,8 @@ async def create_handoff_package(
             "API upload is deliberately NOT used: this Google Cloud project is "
             "unaudited, and videos uploaded through the API would be permanently "
             "locked to private with no appeal.\n"
-            "After uploading, the reconciliation job matches the video back to "
-            "this project from the channel's uploads playlist."
+            "After uploading, paste the YouTube video ID into the Review page. "
+            "The system verifies the video and channel before linking it to this project."
         ),
     )
     session.add(job)
@@ -166,37 +166,68 @@ async def record_published_video(
     project: ContentProject,
     youtube_video_id: str,
     *,
-    method: str = "manual",
-    title: str | None = None,
+    published_at: datetime,
+    method: str,
+    title: str,
+    privacy_status: str | None,
 ) -> PublishedVideo:
-    """Associate an uploaded YouTube video with its project.
+    """Persist a previously verified manual upload for exactly one project.
 
-    `youtube_video_id` is UNIQUE, so the same video can never be attached twice
-    even if reconciliation runs concurrently with a manual confirmation.
+    Remote validation belongs to ``publication_reconciliation``. This helper is
+    deliberately defensive as well: neither an existing project publication
+    nor an existing YouTube ID can be silently reassigned.
     """
-    existing = (
+    existing_for_project = (
+        await session.execute(
+            select(PublishedVideo).where(PublishedVideo.project_id == project.id)
+        )
+    ).scalar_one_or_none()
+    if (
+        existing_for_project is not None
+        and existing_for_project.youtube_video_id != youtube_video_id
+    ):
+        raise ConflictError(
+            "This project is already linked to a different YouTube video.",
+            code="project_already_published",
+        )
+
+    existing_for_video = (
         await session.execute(
             select(PublishedVideo).where(PublishedVideo.youtube_video_id == youtube_video_id)
         )
     ).scalar_one_or_none()
-    if existing is not None:
-        return existing
+    if existing_for_video is not None and existing_for_video.project_id != project.id:
+        raise ConflictError(
+            "That YouTube video is already attached to a different project.",
+            code="youtube_video_already_attached",
+        )
 
     job = (
         await session.execute(
-            select(PublishingJob).where(PublishingJob.project_id == project.id)
+            select(PublishingJob)
+            .where(PublishingJob.project_id == project.id)
+            .order_by(PublishingJob.created_at.desc())
         )
     ).scalars().first()
 
-    published = PublishedVideo(
-        project_id=project.id,
-        publishing_job_id=job.id if job else None,
-        youtube_video_id=youtube_video_id,
-        title=title or (job.title if job else None),
-        reconciled_at=utcnow(),
-        reconciliation_method=method,
-    )
-    session.add(published)
+    published = existing_for_project or existing_for_video
+    if published is None:
+        published = PublishedVideo(
+            project_id=project.id,
+            youtube_video_id=youtube_video_id,
+            published_at=published_at,
+            reconciliation_method=method,
+        )
+        session.add(published)
+
+    # Refresh authoritative metadata on repeated confirmation without creating
+    # another row or changing ownership.
+    published.publishing_job_id = job.id if job else published.publishing_job_id
+    published.title = title
+    published.published_at = published_at
+    published.privacy_status = privacy_status
+    published.reconciled_at = utcnow()
+    published.reconciliation_method = method
 
     if job is not None:
         job.state = PublishState.DONE.value

@@ -10,6 +10,7 @@ container, which is the only image carrying the media stack:
 from __future__ import annotations
 
 import shutil
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -260,9 +261,19 @@ async def test_recording_a_published_video_is_idempotent(session) -> None:
     await publishing.create_handoff_package(session, project, render)
     await session.commit()
 
-    first = await publishing.record_published_video(session, project, "abc123")
+    metadata = {
+        "published_at": datetime(2026, 9, 10, tzinfo=UTC),
+        "method": "test_verified",
+        "title": "Test video",
+        "privacy_status": "public",
+    }
+    first = await publishing.record_published_video(
+        session, project, "Ab_cd-12345", **metadata
+    )
     await session.commit()
-    second = await publishing.record_published_video(session, project, "abc123")
+    second = await publishing.record_published_video(
+        session, project, "Ab_cd-12345", **metadata
+    )
     await session.commit()
 
     assert first.id == second.id
@@ -275,12 +286,20 @@ async def test_recording_publication_closes_the_publishing_job(session) -> None:
     job = await publishing.create_handoff_package(session, project, render)
     await session.commit()
 
-    await publishing.record_published_video(session, project, "vid-999")
+    await publishing.record_published_video(
+        session,
+        project,
+        "Zy_xw-98765",
+        published_at=datetime(2026, 9, 10, tzinfo=UTC),
+        method="test_verified",
+        title="Test video",
+        privacy_status="public",
+    )
     await session.commit()
     await session.refresh(job)
 
     assert job.state == PublishState.DONE
-    assert job.youtube_video_id == "vid-999"
+    assert job.youtube_video_id == "Zy_xw-98765"
 
 
 # ------------------------------------------------------------------- assets ---

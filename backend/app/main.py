@@ -59,7 +59,8 @@ def create_app() -> FastAPI:
         description=(
             f"{settings.APP_TAGLINE}\n\n"
             "Autonomous YouTube content operations system. "
-            "Phase 0 — foundation: job queue, worker, scheduler, health, migrations."
+            "Phases 0-2.5: foundation, YouTube connection, media production, "
+            "and verified manual publication reconciliation."
         ),
         version=__version__,
         lifespan=lifespan,

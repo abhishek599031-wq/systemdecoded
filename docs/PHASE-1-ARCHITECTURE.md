@@ -1,9 +1,9 @@
 # Phase 1 — Product & Technical Design
 ### YouTube Autonomous Content Studio
 
-> Status: **Design only. No application code written yet.**
+> Status: **Implemented through Phase 2.5; retained as the architecture contract.**
 > Date: 2026-08-23
-> This document is the contract for Phase 0–2 implementation. Update it when architecture changes.
+> This document began as the Phase 0–2 contract and is updated when architecture decisions change.
 
 ---
 
@@ -609,13 +609,11 @@ Plus: `CREATE UNIQUE INDEX ... ON publishing_job(project_id) WHERE state NOT IN 
 
 **`published_video`** — `youtube_video_id` is `UNIQUE NOT NULL`. Belt and braces against duplicates.
 
-**`analytics_snapshot`** — the shape that makes learning possible.
+**`youtube_video_daily_metric`** — the Phase 3 source of truth.
 
 ```
 id, published_video_id FK
-snapshot_at timestamptz
-video_age_hours int                 -- THE key field
-age_bucket enum(H24, H72, D7, D28, D90)
+metric_date date
 creator_content_type text           -- 'SHORTS', from the API dimension
 views, engaged_views, estimated_minutes_watched
 average_view_duration_seconds numeric
@@ -623,10 +621,12 @@ average_view_percentage numeric
 likes, comments, shares, subscribers_gained, subscribers_lost
 traffic_sources jsonb
 geography jsonb
-is_final bool                       -- true once the age bucket has closed
 ```
 
-Unique on `(published_video_id, age_bucket)`. **Age bucketing is not cosmetic** — comparing lifetime totals across videos of different ages is the single most common analytics mistake, and this schema makes it hard to commit.
+Unique on `(published_video_id, metric_date)`. Daily raw, idempotent rows are canonical.
+Comparable D1, D3, D7, D28 and D90 windows are initially derived from those rows. If
+materialized age-bucket snapshots later prove useful, they are a derived optimization,
+not the primary store. See ADR 0003.
 
 **`background_job`** — the queue (§9).
 
@@ -781,8 +781,7 @@ Workers poll on a short interval with jitter. `LISTEN/NOTIFY` can remove the pol
 |---|---|---|
 | `refresh_youtube_tokens` | hourly | Refresh before expiry; flip connection to `EXPIRED` on `invalid_grant` |
 | `sync_channel_metadata` | daily | Channel stats, uploads playlist |
-| `reconcile_pending_publishes` | every 15 min | Match human uploads back to projects (§13.5) |
-| `collect_analytics` | daily 03:00 | Snapshot every video whose age bucket is due |
+| `collect_analytics` | daily 03:00 | Upsert per-video daily metrics (§7, ADR 0003) |
 | `run_content_planner` | daily 06:00 | The backlog loop (§10) |
 | `reap_stale_jobs` | every 2 min | Requeue dead-worker jobs |
 | `check_research_staleness` | weekly | Flag trending projects with aged sources |
@@ -1053,11 +1052,11 @@ The mechanism that keeps the pipeline automatic despite §3.1:
 
 1. Project reaches `AWAITING_HUMAN_UPLOAD`. UI shows the MP4 download, title, description, tags, and a copy-ready metadata block.
 2. You upload via YouTube Studio (~60 seconds).
-3. `reconcile_pending_publishes` runs every 15 minutes: reads the channel's uploads playlist (read quota, always permitted), matches new videos against pending projects by title and duration.
-4. On match: create `published_video`, transition to `PUBLISHED`, begin analytics collection.
-5. On ambiguity: surface a one-click "this is the video" confirmation rather than guessing.
+3. Paste the uploaded video's ID into the Review page.
+4. The application calls `videos.list`, verifies that the video exists and belongs to the connected channel, then stores authoritative title, privacy, and publication time.
+5. The transaction creates or updates `published_video` and moves only that project to `PUBLISHED`. Repeating it is a no-op apart from refreshing metadata.
 
-From your side this is one upload. Everything downstream stays automatic.
+This explicit identifier is intentionally preferred to unsafe title-only matching.
 
 ---
 
@@ -1173,7 +1172,7 @@ Each phase ends in something demonstrably working, not a layer.
 | **0 — Foundation** | Compose, Postgres, Alembic, config, job queue, worker/scheduler, structured logging, health endpoint, **README.md** | A test job runs, retries, times out, and appears in job history |
 | **1 — YouTube connection** | OAuth flow, encrypted tokens, channel sync, refresh job, connection health UI | Channel connects; metadata auto-populates; token survives a forced refresh |
 | **2 — One real video, end to end** ⭐ | Manual idea → script → scenes → TTS → align → render → compose → QC → review → `MANUAL_HANDOFF` → reconcile | **One real Short published on the real channel** |
-| **3 — Analytics ingestion** | Analytics client, age-bucketed snapshots, derived metrics, basic charts | Snapshots landing daily for every published video |
+| **3 — Analytics ingestion** | Analytics client, daily metric rows, derived windows, basic charts | Daily metrics landing for every published video |
 | **4 — LLM-assisted generation** | Provider abstraction, Ollama, `LLMTask` manual tier, idea + script generation | A script is produced by the pipeline with one paste step |
 | **5 — Research & quality** | Source capture, fact extraction, staleness, full QC gate incl. similarity | A video ships with every claim traceable to a cited source |
 | **6 — Autonomous planner** | Backlog measurement, allocation, guardrails, scheduling, planner decision log | System maintains a 5-video backlog with no "generate" click |

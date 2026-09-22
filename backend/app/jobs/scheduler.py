@@ -45,7 +45,8 @@ def active_schedule() -> list[ScheduledJob]:
     """Periodic jobs for the phases implemented so far.
 
     ARCH §9.3 lists the full Phase 1-7 schedule. Entries are added in the phase
-    that makes them real, not stubbed ahead of time — publish reconciliation,
+    that makes them real, not stubbed ahead of time. Manual publication has an
+    explicit verified reconciliation workflow; automatic upload discovery,
     analytics collection and the content planner are still absent.
     """
     return [

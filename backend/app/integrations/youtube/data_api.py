@@ -1,7 +1,9 @@
 """YouTube Data API v3 client.
 
-Phase 1 needs exactly one call: `channels.list(mine=true)`. The channel ID is
-always fetched from Google, never typed by a human (ARCH §13.1).
+Phase 1 uses `channels.list(mine=true)` to establish channel identity. Phase
+2.5 also uses `videos.list(id=...)` to verify manual uploads before they are
+attached to a project. Channel and video identity always come from Google,
+never from user-supplied metadata (ARCH §13.1).
 
 Quota note (verified, ARCH §3.2): `channels.list` costs 1 unit against the
 shared 10,000/day pool. The scarce buckets are `search.list` (100 calls/day) and
@@ -11,6 +13,7 @@ shared 10,000/day pool. The scarce buckets are `search.list` (100 calls/day) and
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -42,6 +45,18 @@ class ChannelSnapshot:
     video_count: int | None
     view_count: int | None
     country: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class VideoSnapshot:
+    """Authoritative publication metadata returned by ``videos.list``."""
+
+    youtube_video_id: str
+    youtube_channel_id: str
+    channel_title: str | None
+    title: str
+    published_at: datetime
+    privacy_status: str | None
 
 
 def _int_or_none(value: Any) -> int | None:
@@ -118,3 +133,35 @@ async def fetch_my_channel(access_token: str) -> ChannelSnapshot:
         video_count=snapshot.video_count,
     )
     return snapshot
+
+
+async def fetch_video(access_token: str, youtube_video_id: str) -> VideoSnapshot | None:
+    """Fetch a video by ID, returning ``None`` when it does not exist or is inaccessible.
+
+    The authenticated request is intentional: private/unlisted uploads owned by
+    the connected channel can still be verified during manual handoff.
+    """
+    payload = await _get(
+        "videos",
+        access_token,
+        {"part": "snippet,status", "id": youtube_video_id},
+    )
+    items = payload.get("items") or []
+    if not items:
+        return None
+
+    item = items[0]
+    snippet = item.get("snippet", {})
+    published_raw = snippet.get("publishedAt")
+    if not published_raw:
+        return None
+    published_at = datetime.fromisoformat(str(published_raw).replace("Z", "+00:00"))
+
+    return VideoSnapshot(
+        youtube_video_id=str(item["id"]),
+        youtube_channel_id=str(snippet["channelId"]),
+        channel_title=snippet.get("channelTitle") or None,
+        title=str(snippet.get("title") or ""),
+        published_at=published_at,
+        privacy_status=item.get("status", {}).get("privacyStatus") or None,
+    )

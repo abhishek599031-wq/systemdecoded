@@ -168,6 +168,9 @@ export interface ProjectDetail extends ProjectSummary {
   published_video: {
     youtube_video_id: string;
     url: string;
+    title: string | null;
+    published_at: string;
+    privacy_status: string | null;
     reconciled_at: string | null;
     method: string | null;
   } | null;

@@ -30,13 +30,14 @@ async def get_info() -> dict[str, Any]:
         "tagline": settings.APP_TAGLINE,
         "version": __version__,
         "environment": settings.ENVIRONMENT,
-        "phase": 0,
-        "phase_description": "Foundation: queue, worker, scheduler, health, migrations",
+        "phase": "2.5",
+        "phase_description": "Production complete; verified manual publication reconciliation",
         "capabilities": {
-            "youtube_oauth": False,
+            "youtube_oauth": True,
             "youtube_upload": False,
+            "manual_publication_reconciliation": True,
             "analytics": False,
             "llm_generation": False,
-            "media_production": False,
+            "media_production": True,
         },
     }
