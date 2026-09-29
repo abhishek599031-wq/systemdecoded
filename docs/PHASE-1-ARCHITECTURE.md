@@ -1,7 +1,7 @@
 # Phase 1 — Product & Technical Design
 ### YouTube Autonomous Content Studio
 
-> Status: **Implemented through Phase 2.5; retained as the architecture contract.**
+> Status: **Implemented through Phase 3; retained as the architecture contract.**
 > Date: 2026-08-23
 > This document began as the Phase 0–2 contract and is updated when architecture decisions change.
 
@@ -614,19 +614,20 @@ Plus: `CREATE UNIQUE INDEX ... ON publishing_job(project_id) WHERE state NOT IN 
 ```
 id, published_video_id FK
 metric_date date
-creator_content_type text           -- 'SHORTS', from the API dimension
 views, engaged_views, estimated_minutes_watched
-average_view_duration_seconds numeric
+average_view_duration numeric
 average_view_percentage numeric
 likes, comments, shares, subscribers_gained, subscribers_lost
-traffic_sources jsonb
-geography jsonb
+synced_at, created_at, updated_at
 ```
 
 Unique on `(published_video_id, metric_date)`. Daily raw, idempotent rows are canonical.
 Comparable D1, D3, D7, D28 and D90 windows are initially derived from those rows. If
 materialized age-bucket snapshots later prove useful, they are a derived optimization,
-not the primary store. See ADR 0003.
+not the primary store. Missing API fields remain nullable, and absent recent dates do not
+create zero-valued placeholder rows. The initial implementation intentionally omits
+traffic-source, geography, and content-type dimensions until a concrete product query
+needs them. See ADR 0003.
 
 **`background_job`** — the queue (§9).
 
@@ -781,7 +782,7 @@ Workers poll on a short interval with jitter. `LISTEN/NOTIFY` can remove the pol
 |---|---|---|
 | `refresh_youtube_tokens` | hourly | Refresh before expiry; flip connection to `EXPIRED` on `invalid_grant` |
 | `sync_channel_metadata` | daily | Channel stats, uploads playlist |
-| `collect_analytics` | daily 03:00 | Upsert per-video daily metrics (§7, ADR 0003) |
+| `analytics.sync_all` | daily 06:00 UTC | Enqueue idempotent per-video daily metric syncs (§7, ADR 0003) |
 | `run_content_planner` | daily 06:00 | The backlog loop (§10) |
 | `reap_stale_jobs` | every 2 min | Requeue dead-worker jobs |
 | `check_research_staleness` | weekly | Flag trending projects with aged sources |
@@ -974,7 +975,10 @@ Method for V1: non-parametric (Mann-Whitney U) on the primary metric per arm, pl
 
 ### 12.2 Deferred to later phases
 
-Research browser (Phase 5 — until then, research is shown inline in project detail). Analytics dashboard (Phase 3 ships ingestion; the dedicated screen comes when there is data worth a screen). Experiments (Phase 7). Insights (Phase 7). Production/asset manager (folded into project detail).
+Research browser (Phase 5 — until then, research is shown inline in project detail).
+Analytics is a dedicated Phase 3 operational screen for daily metrics, freshness, and
+derived windows; it is not yet a strategy console. Experiments (Phase 7). Insights
+(Phase 7). Production/asset manager (folded into project detail).
 
 ### 12.3 Technical choices
 

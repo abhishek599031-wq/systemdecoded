@@ -19,7 +19,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
     ARRAY,
@@ -47,6 +47,9 @@ from app.models.enums import (
     QualityVerdict,
     RenderStatus,
 )
+
+if TYPE_CHECKING:  # pragma: no cover
+    from app.models.analytics import YouTubeVideoDailyMetric
 
 
 class ContentProject(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -458,6 +461,12 @@ class PublishedVideo(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     privacy_status: Mapped[str | None] = mapped_column(String(20))
     reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     reconciliation_method: Mapped[str] = mapped_column(String(40), nullable=False)
+
+    daily_metrics: Mapped[list[YouTubeVideoDailyMetric]] = relationship(
+        back_populates="published_video",
+        cascade="all, delete-orphan",
+        order_by="YouTubeVideoDailyMetric.metric_date",
+    )
 
     __table_args__ = (
         UniqueConstraint("project_id", name="uq_published_video_project_id"),

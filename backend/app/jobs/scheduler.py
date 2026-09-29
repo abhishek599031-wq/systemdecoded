@@ -46,8 +46,8 @@ def active_schedule() -> list[ScheduledJob]:
 
     ARCH §9.3 lists the full Phase 1-7 schedule. Entries are added in the phase
     that makes them real, not stubbed ahead of time. Manual publication has an
-    explicit verified reconciliation workflow; automatic upload discovery,
-    analytics collection and the content planner are still absent.
+    explicit verified reconciliation workflow; automatic upload discovery and
+    the content planner are still absent.
     """
     return [
         ScheduledJob(
@@ -88,6 +88,15 @@ def active_schedule() -> list[ScheduledJob]:
             trigger=CronTrigger(hour=4, minute=30),
             slot_seconds=86_400,
             description="Delete expired OAuth state rows.",
+        ),
+        # --- Phase 3: Analytics ---
+        # This only enqueues a fan-out job. The handler checks the kill switch
+        # before creating one durable child job per published video.
+        ScheduledJob(
+            job_type="analytics.sync_all",
+            trigger=CronTrigger(hour=6, minute=0),
+            slot_seconds=86_400,
+            description="Refresh daily analytics for published videos.",
         ),
     ]
 

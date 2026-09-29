@@ -15,7 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.clock import utcnow
-from app.models.channel import AppSetting
+from app.models.analytics import YouTubeVideoDailyMetric
+from app.models.channel import AppSetting, Channel
 from app.models.enums import ConnectionStatus, JobStatus
 from app.models.job import BackgroundJob
 
@@ -116,6 +117,15 @@ async def get_system_status(session: AsyncSession) -> dict[str, Any]:
     counts = await get_job_counts(session)
     revision = await get_migration_revision(session)
     connection_status = await get_youtube_connection_status(session)
+    channel = (
+        await session.execute(select(Channel).order_by(Channel.created_at).limit(1))
+    ).scalar_one_or_none()
+    analytics_rows = await session.scalar(
+        select(func.count()).select_from(YouTubeVideoDailyMetric)
+    )
+    analytics_last_sync = await session.scalar(
+        select(func.max(YouTubeVideoDailyMetric.synced_at))
+    )
 
     return {
         "status": "healthy" if revision else "degraded",
@@ -140,6 +150,15 @@ async def get_system_status(session: AsyncSession) -> dict[str, Any]:
                 "connection_status": connection_status,
                 "connected": connection_status == ConnectionStatus.ACTIVE,
                 "status": "implemented",
+            },
+            "youtube_analytics": {
+                "implemented": True,
+                "enabled": bool(channel and channel.analytics_enabled),
+                "daily_rows": int(analytics_rows or 0),
+                "latest_row_sync_at": (
+                    analytics_last_sync.isoformat() if analytics_last_sync else None
+                ),
+                "source_of_truth": "daily_metrics",
             },
             "llm": {
                 "mechanical_mode": settings.LLM_MECHANICAL_MODE,

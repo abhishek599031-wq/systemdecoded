@@ -77,6 +77,13 @@ export interface SystemStatus {
       connection_status?: string;
       connected?: boolean;
     };
+    youtube_analytics?: {
+      implemented: boolean;
+      enabled: boolean;
+      daily_rows: number;
+      latest_row_sync_at: string | null;
+      source_of_truth: string;
+    };
     llm: { mechanical_mode: string; creative_mode: string; status: string };
   };
   config_problems?: string[];
@@ -221,6 +228,54 @@ export interface Channel {
   analytics_enabled: boolean;
 }
 
+export interface AnalyticsMetrics {
+  views: number | null;
+  engaged_views: number | null;
+  likes: number | null;
+  comments: number | null;
+  shares: number | null;
+  subscribers_gained: number | null;
+  subscribers_lost: number | null;
+  estimated_minutes_watched: number | null;
+  average_view_duration: number | null;
+  average_view_percentage: number | null;
+}
+
+export interface AnalyticsFreshness {
+  status: "AVAILABLE" | "PENDING" | "UNAVAILABLE" | "AUTH_EXPIRED" | "ERROR";
+  reason: string;
+  latest_metric_date: string | null;
+  latest_successful_sync: string | null;
+  latest_job_id: string | null;
+  latest_job_status: string | null;
+}
+
+export interface AnalyticsVideo {
+  published_video_id: string;
+  project_id: string;
+  youtube_video_id: string;
+  title: string | null;
+  published_at: string;
+  privacy_status: string | null;
+  metrics: AnalyticsMetrics;
+  freshness: AnalyticsFreshness;
+}
+
+export interface DailyAnalytics extends AnalyticsMetrics {
+  metric_date: string;
+  synced_at: string;
+}
+
+export interface AnalyticsWindow extends AnalyticsMetrics {
+  window: string;
+  status: string;
+  start_date: string | null;
+  end_date: string | null;
+  days_present: number;
+  days_expected: number;
+  complete: boolean;
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -310,4 +365,29 @@ export const api = {
     request<Record<string, unknown>>("/api/v1/youtube/refresh", { method: "POST" }),
   youtubeDisconnect: () =>
     request<{ disconnected: boolean }>("/api/v1/youtube/disconnect", { method: "POST" }),
+
+  analyticsOverview: () =>
+    request<{
+      analytics_enabled: boolean;
+      published_videos: number;
+      videos_with_analytics: number;
+      metrics: AnalyticsMetrics;
+      latest_successful_sync: string | null;
+      scope: string;
+    }>("/api/v1/analytics/overview"),
+  analyticsVideos: () =>
+    request<{ items: AnalyticsVideo[]; total: number }>("/api/v1/analytics/videos"),
+  analyticsDaily: (publishedVideoId: string) =>
+    request<{ items: DailyAnalytics[]; total: number }>(
+      `/api/v1/analytics/videos/${publishedVideoId}/daily`,
+    ),
+  analyticsWindows: (publishedVideoId: string) =>
+    request<{ items: AnalyticsWindow[] }>(
+      `/api/v1/analytics/videos/${publishedVideoId}/windows`,
+    ),
+  analyticsSync: (publishedVideoId?: string) =>
+    request<{ job_id: string; created: boolean; status: string }>("/api/v1/analytics/sync", {
+      method: "POST",
+      body: JSON.stringify({ published_video_id: publishedVideoId ?? null }),
+    }),
 };

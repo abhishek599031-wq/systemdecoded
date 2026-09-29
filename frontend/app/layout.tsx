@@ -10,7 +10,7 @@ const NAV = [
   { label: "Dashboard", href: "/", active: true },
   { label: "Review", href: "/review", active: true },
   { label: "Ideas", href: "#", active: false, phase: 4 },
-  { label: "Analytics", href: "#", active: false, phase: 3 },
+  { label: "Analytics", href: "/analytics", active: true },
 ];
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -47,7 +47,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 )}
               </nav>
               <div className="ml-auto rounded-full border border-ink-700 px-3 py-1 text-xs text-ink-300">
-                Phase 2 — Production
+                Phase 3 — Analytics
               </div>
             </div>
           </header>

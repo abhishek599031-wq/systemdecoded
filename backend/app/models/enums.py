@@ -79,6 +79,16 @@ class ConnectionStatus(StrEnum):
     ERROR = "ERROR"
 
 
+class AnalyticsFreshness(StrEnum):
+    """Operator-facing availability of a published video's analytics."""
+
+    AVAILABLE = "AVAILABLE"
+    PENDING = "PENDING"
+    UNAVAILABLE = "UNAVAILABLE"
+    AUTH_EXPIRED = "AUTH_EXPIRED"
+    ERROR = "ERROR"
+
+
 # ===========================================================================
 # Phase 2 — content production
 # ===========================================================================

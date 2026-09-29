@@ -57,6 +57,11 @@ class VideoSnapshot:
     title: str
     published_at: datetime
     privacy_status: str | None
+    description: str | None = None
+    duration: str | None = None
+    view_count: int | None = None
+    like_count: int | None = None
+    comment_count: int | None = None
 
 
 def _int_or_none(value: Any) -> int | None:
@@ -144,7 +149,7 @@ async def fetch_video(access_token: str, youtube_video_id: str) -> VideoSnapshot
     payload = await _get(
         "videos",
         access_token,
-        {"part": "snippet,status", "id": youtube_video_id},
+        {"part": "snippet,contentDetails,status,statistics", "id": youtube_video_id},
     )
     items = payload.get("items") or []
     if not items:
@@ -164,4 +169,9 @@ async def fetch_video(access_token: str, youtube_video_id: str) -> VideoSnapshot
         title=str(snippet.get("title") or ""),
         published_at=published_at,
         privacy_status=item.get("status", {}).get("privacyStatus") or None,
+        description=snippet.get("description") or None,
+        duration=item.get("contentDetails", {}).get("duration") or None,
+        view_count=_int_or_none(item.get("statistics", {}).get("viewCount")),
+        like_count=_int_or_none(item.get("statistics", {}).get("likeCount")),
+        comment_count=_int_or_none(item.get("statistics", {}).get("commentCount")),
     )

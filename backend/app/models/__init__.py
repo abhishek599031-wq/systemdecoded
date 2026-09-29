@@ -6,6 +6,7 @@ invisible to migrations — a silent and annoying failure mode.
 """
 
 from app.db.base import Base
+from app.models.analytics import YouTubeVideoDailyMetric
 from app.models.channel import AppSetting, Channel
 from app.models.content import (
     ContentProject,
@@ -21,6 +22,7 @@ from app.models.content import (
     VideoRender,
 )
 from app.models.enums import (
+    AnalyticsFreshness,
     AssetOrigin,
     AssetType,
     ConnectionStatus,
@@ -38,6 +40,7 @@ from app.models.quota import ProviderQuotaUsage
 from app.models.youtube import OAuthState, YouTubeConnection
 
 __all__ = [
+    "AnalyticsFreshness",
     "AppSetting",
     "AssetOrigin",
     "AssetType",
@@ -68,4 +71,5 @@ __all__ = [
     "Script",
     "VideoRender",
     "YouTubeConnection",
+    "YouTubeVideoDailyMetric",
 ]

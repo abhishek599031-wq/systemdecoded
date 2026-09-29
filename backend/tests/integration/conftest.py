@@ -29,6 +29,7 @@ TRUNCATE_TABLES = (
     "youtube_connection",
     "oauth_state",
     "provider_quota_usage",
+    "youtube_video_daily_metric",
     # Phase 2. Ordered child-first, though CASCADE makes ordering moot.
     "quality_check",
     "production_asset",
@@ -126,7 +127,8 @@ async def clean_tables(database: None) -> AsyncIterator[None]:
                     connection_status = 'NOT_CONNECTED',
                     connected_at = NULL,
                     last_sync_at = NULL,
-                    publishing_enabled = false
+                    publishing_enabled = false,
+                    analytics_enabled = false
                 """
             )
         )

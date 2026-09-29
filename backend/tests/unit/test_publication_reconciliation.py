@@ -66,7 +66,7 @@ async def test_fetch_video_uses_authenticated_videos_list(monkeypatch) -> None:
     assert video.privacy_status == "public"
     assert seen == {
         "authorization": "Bearer access-token",
-        "part": "snippet,status",
+        "part": "snippet,contentDetails,status,statistics",
         "id": "Ab_cd-12345",
     }
 

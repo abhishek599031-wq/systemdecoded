@@ -4,7 +4,7 @@
 
 An autonomous YouTube content operations system for a technology edutainment channel.
 
-**Current status: Phase 2.5 — Publication state hardening. Complete.**
+**Current status: Phase 3 — YouTube analytics data foundation.**
 The system produces a finished, review-ready YouTube Short end to end: script →
 local TTS narration → timings measured from that audio → word-aligned captions →
 scene visuals rendered from HTML templates → FFmpeg composition → automated quality
@@ -39,6 +39,7 @@ Next.js studio, and YouTube OAuth with encrypted tokens.
 - [Implementation status](#implementation-status)
 - [Roadmap](#roadmap)
 - [YouTube integration](#youtube-integration)
+- [YouTube analytics](#youtube-analytics)
 - [Troubleshooting](#troubleshooting)
 - [Known limitations](#known-limitations)
 - [Documentation](#documentation)
@@ -362,8 +363,8 @@ alembic upgrade head
 The initial migration seeds one `channel` row (deterministic UUID) so there is no
 startup race and no bootstrap step.
 
-Current head: `0005_publication_state_hardening` — the content hierarchy, provider
-quota ledger, and project-scoped verified manual publication records.
+Current head: `0006_youtube_analytics_daily` — canonical per-video daily YouTube
+Analytics metrics, following the publication-state hardening migrations.
 
 ---
 
@@ -396,6 +397,12 @@ FastAPI on `:8000`. Interactive docs at `/docs`.
 | `POST /api/v1/youtube/sync` | Re-sync channel metadata from YouTube |
 | `POST /api/v1/youtube/refresh` | Force an access-token refresh |
 | `POST /api/v1/youtube/disconnect` | Revoke and delete the stored connection |
+| `GET /api/v1/analytics/overview` | Aggregate metrics for tracked published videos |
+| `GET /api/v1/analytics/videos` | Published-video summaries and freshness state |
+| `GET /api/v1/analytics/videos/{id}/daily` | Canonical daily metric time series |
+| `GET /api/v1/analytics/videos/{id}/windows` | Derived D1/D3/D7/D28/D90 windows |
+| `GET /api/v1/analytics/videos/{id}/freshness` | Provider/job freshness details |
+| `POST /api/v1/analytics/sync` | Queue one-video or all-video analytics sync work |
 
 **Error envelope.** Every failure, from any layer, serialises identically:
 
@@ -419,8 +426,9 @@ handling that request carries the same `request_id`.
 
 Next.js 15 App Router on `:3000`. The dashboard shows system and YouTube health, channel
 configuration, job counts, and live job history. The Review screen provides video/QC
-review, publishing metadata, and verified manual-upload reconciliation. Ideas/planning
-and analytics remain future phases.
+review, publishing metadata, and verified manual-upload reconciliation. The Analytics
+screen shows daily public and engaged views, operational freshness, and derived
+performance windows. Ideas/planning remain future phases.
 
 ```bash
 cd frontend
@@ -641,10 +649,21 @@ Coverage of the foundation:
 | Partial-scope detection | ✅ |
 | Connect / sync / refresh / disconnect UI | ✅ |
 
+### Phase 3 — YouTube analytics ✅
+
+| Item | Status |
+|---|---|
+| Canonical per-video daily metric table | ✅ |
+| Initial publication-to-present backfill | ✅ |
+| 14-day rolling refresh and historical-gap recovery | ✅ |
+| PostgreSQL-queued manual and scheduled sync | ✅ |
+| AVAILABLE / PENDING / UNAVAILABLE / AUTH_EXPIRED / ERROR states | ✅ |
+| Derived D1/D3/D7/D28/D90 windows | ✅ |
+| Operational Analytics page | ✅ |
+
 ### Not built yet — and honestly labelled in the UI
 
-Analytics ingestion · LLM-assisted script generation · autonomous planner ·
-experiments · insights.
+LLM-assisted script generation · autonomous planner · experiments · insights.
 
 ---
 
@@ -655,7 +674,7 @@ experiments · insights.
 | **0** ✅ | Foundation | A job runs, retries, times out, and appears in history |
 | **1** ✅ | YouTube connection | Channel connects; metadata auto-populates; token survives refresh |
 | **2** ✅ | One real video, end to end | **One real Short published on the real channel** |
-| **3** | Analytics ingestion | Idempotent per-video daily metrics landing daily |
+| **3** ✅ | Analytics ingestion | Idempotent per-video daily metrics landing daily |
 | **4** | LLM-assisted generation | A script produced by the pipeline with one paste step |
 | **5** | Research & quality gates | Every claim traceable to a cited source |
 | **6** | Autonomous planner | A 5-video backlog maintained with no "generate" click |
@@ -752,6 +771,58 @@ upload in ~60 seconds via Studio, then paste the video ID into the Review page. 
 application reads authoritative metadata from YouTube, verifies that the video belongs
 to the connected channel, and atomically reconciles it to that project. Automatic
 publishing remains disabled.
+
+---
+
+## YouTube analytics
+
+Phase 3 stores `youtube_video_daily_metric` as the canonical performance history:
+one nullable metric row per `(published_video_id, metric_date)`. `metric_date` is the
+`day` value returned by YouTube Analytics, not a date derived in the host machine's
+timezone. Publication request boundaries use YouTube's Pacific reporting timezone;
+`published_at` remains a timezone-aware UTC timestamp.
+
+The sync uses `reports.query` with `ids=channel==MINE`, `dimensions=day`, and a
+`video==<youtube_video_id>` filter. It requests public `views`, `engagedViews`, likes,
+comments, shares, subscriber gains/losses, watch minutes, average view duration, and
+average view percentage. Missing columns and values stay `NULL`; an unavailable day is
+never written as a synthetic zero row.
+
+`views` and `engaged_views` deliberately remain separate. Since 31 March 2025, Shorts
+public views count starts/replays, while `engagedViews` retains the earlier continued-
+watching methodology. Comparisons must name which signal they use.
+
+Before each report request, `videos.list(part=snippet,contentDetails,status,statistics)`
+refreshes ownership and authoritative video metadata. Its cumulative public statistics
+are operational verification only; they are not mixed into, or persisted as, daily
+Analytics history.
+
+Sync behavior:
+
+- first sync requests publication reporting date through the current provider date and
+  persists only rows actually returned;
+- later syncs refresh the latest 14 reporting days because YouTube can revise late data;
+- the earliest older missing day is folded into a broader recovery request;
+- PostgreSQL `ON CONFLICT` upserts make every returned day repeat-safe;
+- provider 429/network/5xx failures use the queue's bounded backoff, while auth and quota
+  failures are surfaced without blind retries;
+- the scheduler enqueues `analytics.sync_all` daily at 06:00 UTC; it and manual syncs
+  honor the channel's `analytics_enabled` kill switch.
+
+Freshness is explicit: `AVAILABLE`, `PENDING`, `UNAVAILABLE`, `AUTH_EXPIRED`, or
+`ERROR`. Recent absent dates are pending provider data, not zero performance.
+
+D1, D3, D7, D28, and D90 are query-time projections anchored on the first day returned
+by the Analytics API. Additive metrics are summed only when every stored row in the
+window has that metric. Average duration and percentage are weighted by `engaged_views`;
+if every required denominator is not present, the aggregate is returned as unavailable
+instead of averaging daily averages. Each window reports its expected/present day count
+and whether all dates are present.
+
+The Analytics API does not consume YouTube Data API quota units. Each per-video sync
+does make one `videos.list` verification call, currently a one-unit Data API method.
+Analytics reports can lag recent activity, so the latest dates may legitimately be
+absent until YouTube finalizes them.
 
 ---
 
