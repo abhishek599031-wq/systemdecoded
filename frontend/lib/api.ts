@@ -81,6 +81,8 @@ export interface SystemStatus {
       implemented: boolean;
       enabled: boolean;
       daily_rows: number;
+      window_rows?: number;
+      feature_profiles?: number;
       latest_row_sync_at: string | null;
       source_of_truth: string;
     };
@@ -274,6 +276,69 @@ export interface AnalyticsWindow extends AnalyticsMetrics {
   days_present: number;
   days_expected: number;
   complete: boolean;
+  provider?: string;
+  synced_at?: string | null;
+}
+
+export interface ContentFeatureProfile {
+  id: string;
+  project_id: string;
+  profile_version: number;
+  system_derived: {
+    duration_seconds: number | null;
+    narration_duration_seconds: number | null;
+    scene_count: number | null;
+    script_word_count: number | null;
+    narration_word_count: number | null;
+    narration_words_per_minute: number | null;
+    voice_provider: string | null;
+    voice_model: string | null;
+    voice_name: string | null;
+    tts_speed: number | null;
+    caption_event_count: number | null;
+    render_width: number | null;
+    render_height: number | null;
+    template_families: string[];
+    content_format: string | null;
+    published_title: string | null;
+    cta_present: boolean | null;
+  };
+  editorial: {
+    topic_category: string | null;
+    topic: string | null;
+    subtopic: string | null;
+    hook_type: string | null;
+    hook_text: string | null;
+    title_style: string | null;
+    explanation_pattern: string | null;
+    audience_level: string | null;
+    technical_depth: string | null;
+    cta_type: string | null;
+    visual_storytelling_style: string | null;
+    question_answered: string | null;
+  };
+  field_provenance: Record<string, "SYSTEM_DERIVED" | "MANUAL">;
+  derived_at: string | null;
+}
+
+export interface AuthoritativeWindow extends AnalyticsMetrics {
+  window: "D1" | "D3" | "D7" | "D28" | "D90";
+  status: "PENDING" | "AVAILABLE" | "ERROR";
+  start_date: string;
+  end_date: string;
+  provider: string;
+  synced_at: string | null;
+  last_error: string | null;
+}
+
+export interface LearningRecord {
+  video_id: string;
+  published_video_id: string;
+  project_id: string;
+  title: string | null;
+  published_at: string;
+  features: ContentFeatureProfile | null;
+  performance: Record<"D1" | "D3" | "D7" | "D28" | "D90", AuthoritativeWindow | null>;
 }
 
 export class ApiError extends Error {
@@ -390,4 +455,19 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ published_video_id: publishedVideoId ?? null }),
     }),
+  contentRecords: () =>
+    request<{ items: LearningRecord[]; total: number }>("/api/v1/content-intelligence/records"),
+  updateContentProfile: (
+    projectId: string,
+    editorial: Partial<ContentFeatureProfile["editorial"]>,
+  ) =>
+    request<ContentFeatureProfile>(`/api/v1/content-intelligence/projects/${projectId}/profile`, {
+      method: "PATCH",
+      body: JSON.stringify(editorial),
+    }),
+  refreshContentIntelligence: (publishedVideoId: string) =>
+    request<{ job_id: string; created: boolean; status: string }>(
+      `/api/v1/content-intelligence/videos/${publishedVideoId}/refresh`,
+      { method: "POST" },
+    ),
 };

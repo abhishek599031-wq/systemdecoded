@@ -1,7 +1,7 @@
 # Phase 1 — Product & Technical Design
 ### YouTube Autonomous Content Studio
 
-> Status: **Implemented through Phase 3; retained as the architecture contract.**
+> Status: **Implemented through Phase 4; retained as the architecture contract.**
 > Date: 2026-08-23
 > This document began as the Phase 0–2 contract and is updated when architecture decisions change.
 
@@ -609,7 +609,16 @@ Plus: `CREATE UNIQUE INDEX ... ON publishing_job(project_id) WHERE state NOT IN 
 
 **`published_video`** — `youtube_video_id` is `UNIQUE NOT NULL`. Belt and braces against duplicates.
 
-**`youtube_video_daily_metric`** — the Phase 3 source of truth.
+**`youtube_video_daily_metric`** — canonical Phase 3/4 time-series history.
+
+**`youtube_video_window_metric`** — provider-authoritative D1/D3/D7/D28/D90
+aggregates fetched without a day dimension. Explicit pending state prevents provider lag
+from becoming fake zero performance.
+
+**`content_feature_profile`** — one versioned profile per content project, separating
+system-derived production facts from manual editorial classification with per-field
+provenance. It joins to published-video lifecycle windows to form the observational
+learning dataset (ADR 0004).
 
 ```
 id, published_video_id FK
@@ -622,12 +631,12 @@ synced_at, created_at, updated_at
 ```
 
 Unique on `(published_video_id, metric_date)`. Daily raw, idempotent rows are canonical.
-Comparable D1, D3, D7, D28 and D90 windows are initially derived from those rows. If
-materialized age-bucket snapshots later prove useful, they are a derived optimization,
-not the primary store. Missing API fields remain nullable, and absent recent dates do not
-create zero-valued placeholder rows. The initial implementation intentionally omits
-traffic-source, geography, and content-type dimensions until a concrete product query
-needs them. See ADR 0003.
+Provider-authoritative D1, D3, D7, D28 and D90 aggregates use the video's
+YouTube/Pacific publication reporting date as their stable anchor and are fetched only
+after every expected daily date is present. Missing API fields remain nullable, and absent
+recent dates do not create zero-valued placeholder rows. The initial implementation
+intentionally omits traffic-source, geography, and content-type dimensions until a
+concrete product query needs them. See ADR 0003.
 
 **`background_job`** — the queue (§9).
 
@@ -782,7 +791,7 @@ Workers poll on a short interval with jitter. `LISTEN/NOTIFY` can remove the pol
 |---|---|---|
 | `refresh_youtube_tokens` | hourly | Refresh before expiry; flip connection to `EXPIRED` on `invalid_grant` |
 | `sync_channel_metadata` | daily | Channel stats, uploads playlist |
-| `analytics.sync_all` | daily 06:00 UTC | Enqueue idempotent per-video daily metric syncs (§7, ADR 0003) |
+| `analytics.sync_all` | daily 06:00 UTC | Enqueue idempotent daily history, fixed-window, and feature-profile refreshes (ADR 0003/0004) |
 | `run_content_planner` | daily 06:00 | The backlog loop (§10) |
 | `reap_stale_jobs` | every 2 min | Requeue dead-worker jobs |
 | `check_research_staleness` | weekly | Flag trending projects with aged sources |
@@ -977,6 +986,9 @@ Method for V1: non-parametric (Mann-Whitney U) on the primary metric per arm, pl
 
 Research browser (Phase 5 — until then, research is shown inline in project detail).
 Analytics is a dedicated Phase 3 operational screen for daily metrics, freshness, and
+provider-authoritative fixed lifecycle windows. Content Intelligence is the Phase 4
+screen for reviewed content features and observational learning records. It deliberately
+shows evidence counts and no strategy recommendation.
 derived windows; it is not yet a strategy console. Experiments (Phase 7). Insights
 (Phase 7). Production/asset manager (folded into project detail).
 
@@ -1013,7 +1025,7 @@ sequenceDiagram
     B-->>F: redirect to /channel?connected=1
 ```
 
-Scopes: `youtube.readonly`, `yt-analytics.readonly`, and `youtube.upload` (requested up front so the audit path does not need re-consent later).
+Scopes: `youtube.readonly` and `yt-analytics.readonly`. Write scopes are requested only when an implemented, enabled feature needs them; `MANUAL_HANDOFF` does not.
 
 Non-negotiables: the code exchange is server-side only; `access_type=offline` with `prompt=consent` to guarantee a refresh token; `state` verified against a server-side value; tokens encrypted at rest and never sent to the frontend; **no Google password is ever requested or stored**; the channel ID is fetched from `channels.list(mine=true)`, never typed by the user.
 

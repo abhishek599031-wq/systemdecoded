@@ -1,8 +1,8 @@
-# ADR 0003: Daily YouTube metrics are the analytics source of truth
+# ADR 0003: Daily history and fixed-window YouTube aggregates have distinct authority
 
 ## Status
 
-Accepted and implemented in Phase 3.
+Accepted in Phase 3 and amended in Phase 4 after measuring provider quantization.
 
 ## Decision
 
@@ -10,10 +10,15 @@ Phase 3 persists one idempotent raw analytics row per published video and
 YouTube metric date, modeled as `YouTubeVideoDailyMetric` with authoritative
 uniqueness on `(published_video_id, metric_date)`.
 
-D1, D3, D7, D28, and D90 performance windows will initially be derived from
-those daily rows. Materialized age-bucket snapshots may be introduced later as
-a derived optimization, but they will not replace daily metrics as canonical
-storage.
+Daily rows remain canonical for time-series history, daily growth, spikes,
+decay, and trend analysis. They are not sufficient for authoritative lifecycle
+totals: YouTube returns some day-level watch metrics as integers, and summing
+those already-quantized cells loses information.
+
+Phase 4 therefore persists direct, dimensionless provider reports for the fixed
+D1, D3, D7, D28, and D90 lifecycle windows. `YouTubeVideoWindowMetric` is unique
+on `(published_video_id, window_type)` and stores the provider's aggregate for
+the exact window. These rows complement rather than replace daily history.
 
 The stored metrics are `views`, `engaged_views`, `likes`, `comments`, `shares`,
 `subscribers_gained`, `subscribers_lost`, `estimated_minutes_watched`,
@@ -33,11 +38,16 @@ only dates YouTube returns. Incremental sync refreshes the most recent 14 days a
 recovers older gaps with idempotent upserts. No placeholder rows are created for
 provider latency.
 
-The derived windows anchor on the first API-returned reporting day. Additive
-metrics are summed without substituting missing values. Playback averages are
-weighted by `engaged_views` only when every daily numerator and denominator is
-available; otherwise the aggregate is unavailable. Window responses also carry
-date coverage and completeness, so partial provider history is visible.
+Lifecycle windows anchor on the video's YouTube/Pacific publication reporting day. The
+first provider-returned daily row never redefines D1. A window is
+eligible only after daily reporting coverage reaches every required date.
+Wall-clock maturity alone is insufficient because YouTube reporting can lag.
+Eligible metrics are fetched with no `day` dimension and stored with explicit
+`PENDING`, `AVAILABLE`, or `ERROR` state. No pending window receives fake zero
+metrics.
+
+Existing query-time daily projections remain useful diagnostics, but they are
+not presented as provider-authoritative fixed-window watch time or averages.
 
 The YouTube Data API snapshot is used to verify ownership and refresh current
 metadata. Its cumulative public statistics are operational context, not canonical
@@ -45,7 +55,26 @@ daily history.
 
 ## Rationale
 
-Daily rows preserve the API's natural time grain, allow corrected or delayed
-data to be upserted deterministically, and support new comparison windows
-without a schema change or lost detail. Storing only one row per age bucket
-would discard information and make later recomputation difficult.
+Daily rows preserve the API's natural time grain and allow corrected or delayed
+data to be upserted deterministically. Direct aggregate rows preserve the
+provider's fixed-window calculation before per-day integer quantization. Both
+grains are required for a trustworthy learning dataset.
+
+```text
+                         YouTube Analytics
+                                |
+                 +--------------+--------------+
+                 |                             |
+          dimensions=day                no day dimension
+                 |                             |
+                 v                             v
+       DailyMetric history            WindowMetric results
+                 |                             |
+                 v                             v
+       trend/time-series             D1/D3/D7/D28/D90
+                 |                             |
+                 +--------------+--------------+
+                                |
+                                v
+                       Learning Dataset
+```

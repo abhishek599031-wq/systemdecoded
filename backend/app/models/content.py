@@ -49,7 +49,8 @@ from app.models.enums import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover
-    from app.models.analytics import YouTubeVideoDailyMetric
+    from app.models.analytics import YouTubeVideoDailyMetric, YouTubeVideoWindowMetric
+    from app.models.content_intelligence import ContentFeatureProfile
 
 
 class ContentProject(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -105,6 +106,11 @@ class ContentProject(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         cascade="all, delete-orphan",
         order_by="ProjectTransition.created_at",
         lazy="selectin",
+    )
+    feature_profile: Mapped[ContentFeatureProfile | None] = relationship(
+        back_populates="project",
+        cascade="all, delete-orphan",
+        uselist=False,
     )
 
     __table_args__ = (
@@ -466,6 +472,11 @@ class PublishedVideo(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         back_populates="published_video",
         cascade="all, delete-orphan",
         order_by="YouTubeVideoDailyMetric.metric_date",
+    )
+    window_metrics: Mapped[list[YouTubeVideoWindowMetric]] = relationship(
+        back_populates="published_video",
+        cascade="all, delete-orphan",
+        order_by="YouTubeVideoWindowMetric.window_end_date",
     )
 
     __table_args__ = (

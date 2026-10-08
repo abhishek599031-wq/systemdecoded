@@ -29,7 +29,9 @@ TRUNCATE_TABLES = (
     "youtube_connection",
     "oauth_state",
     "provider_quota_usage",
+    "youtube_video_window_metric",
     "youtube_video_daily_metric",
+    "content_feature_profile",
     # Phase 2. Ordered child-first, though CASCADE makes ordering moot.
     "quality_check",
     "production_asset",

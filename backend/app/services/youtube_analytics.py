@@ -17,13 +17,21 @@ from app.core.clock import utcnow
 from app.core.ids import uuid7
 from app.integrations.youtube import analytics_api, data_api
 from app.integrations.youtube.errors import (
+    GoogleAPIError,
+    QuotaExceededError,
     YouTubeVideoNotFoundError,
     YouTubeVideoOwnershipError,
 )
-from app.models.analytics import YouTubeVideoDailyMetric
+from app.models.analytics import YouTubeVideoDailyMetric, YouTubeVideoWindowMetric
 from app.models.channel import Channel
 from app.models.content import ContentProject, PublishedVideo
-from app.models.enums import AnalyticsFreshness, ConnectionStatus, JobStatus
+from app.models.enums import (
+    AnalyticsFreshness,
+    AnalyticsWindowStatus,
+    AnalyticsWindowType,
+    ConnectionStatus,
+    JobStatus,
+)
 from app.models.job import BackgroundJob
 from app.services import youtube_connection
 
@@ -31,6 +39,7 @@ REPORTING_ZONE = ZoneInfo("America/Los_Angeles")
 RECENT_REFRESH_DAYS = 14
 PENDING_REPORTING_DAYS = 3
 WINDOW_DAYS = (1, 3, 7, 28, 90)
+WINDOW_RECENT_REFRESH_DAYS = 14
 
 _PROVIDER_TO_COLUMN = {
     "views": "views",
@@ -149,8 +158,125 @@ async def _upsert_rows(
     return count
 
 
-async def sync_video(session: AsyncSession, published_video_id: uuid.UUID) -> dict[str, Any]:
-    """Refresh authoritative metadata and canonical daily metrics for one video."""
+def _window_payload(metric: analytics_api.AggregateMetric) -> dict[str, Any]:
+    returned = metric.returned_metrics or frozenset(_PROVIDER_TO_COLUMN)
+    return {
+        column: getattr(metric, column)
+        for provider_name, column in _PROVIDER_TO_COLUMN.items()
+        if provider_name in returned
+    }
+
+
+async def sync_windows(
+    session: AsyncSession,
+    video: PublishedVideo,
+    access_token: str,
+    *,
+    force: bool = False,
+) -> list[dict[str, Any]]:
+    """Persist direct provider aggregates for complete fixed windows."""
+    dates = set(
+        (
+            await session.execute(
+                select(YouTubeVideoDailyMetric.metric_date).where(
+                    YouTubeVideoDailyMetric.published_video_id == video.id
+                )
+            )
+        ).scalars()
+    )
+    # Lifecycle windows are comparable only when the anchor is stable. Provider
+    # latency can omit the publication day from an early response, so the first
+    # returned daily row must never redefine D1.
+    anchor = publication_reporting_date(video)
+    existing = {
+        row.window_type: row
+        for row in (
+            await session.execute(
+                select(YouTubeVideoWindowMetric).where(
+                    YouTubeVideoWindowMetric.published_video_id == video.id
+                )
+            )
+        ).scalars()
+    }
+    today = provider_today()
+    results: list[dict[str, Any]] = []
+
+    for window in AnalyticsWindowType:
+        end = anchor + timedelta(days=window.days - 1)
+        expected = {anchor + timedelta(days=offset) for offset in range(window.days)}
+        complete = expected.issubset(dates)
+        row = existing.get(window.value)
+        if row is None:
+            row = YouTubeVideoWindowMetric(
+                published_video_id=video.id,
+                window_type=window.value,
+                status=AnalyticsWindowStatus.PENDING.value,
+                window_start_date=anchor,
+                window_end_date=end,
+                provider="youtube_analytics",
+            )
+            session.add(row)
+            existing[window.value] = row
+        else:
+            row.window_start_date = anchor
+            row.window_end_date = end
+
+        recently_completed = end >= today - timedelta(days=WINDOW_RECENT_REFRESH_DAYS)
+        should_fetch = complete and (
+            force or row.status != AnalyticsWindowStatus.AVAILABLE.value or recently_completed
+        )
+        fetched = False
+        if should_fetch:
+            try:
+                metric = await analytics_api.fetch_video_window_metrics(
+                    access_token,
+                    video.youtube_video_id,
+                    anchor,
+                    end,
+                )
+            except (GoogleAPIError, QuotaExceededError, ValueError) as exc:
+                row.status = AnalyticsWindowStatus.ERROR.value
+                row.last_error = str(exc)[:1000]
+                row.synced_at = utcnow()
+                await session.flush()
+                raise
+            if metric is not None:
+                for field, value in _window_payload(metric).items():
+                    setattr(row, field, value)
+                row.status = AnalyticsWindowStatus.AVAILABLE.value
+                row.provider = "youtube_analytics"
+                row.synced_at = utcnow()
+                row.last_error = None
+                fetched = True
+            else:
+                row.status = AnalyticsWindowStatus.PENDING.value
+                row.last_error = "Provider returned no aggregate row for a covered window."
+        elif not complete and row.status != AnalyticsWindowStatus.AVAILABLE.value:
+            row.status = AnalyticsWindowStatus.PENDING.value
+            row.last_error = None
+
+        results.append(
+            {
+                "window": window.value,
+                "status": row.status,
+                "start_date": anchor.isoformat(),
+                "end_date": end.isoformat(),
+                "coverage_complete": complete,
+                "fetched": fetched,
+            }
+        )
+
+    await session.flush()
+    return results
+
+
+async def sync_video(
+    session: AsyncSession,
+    published_video_id: uuid.UUID,
+    *,
+    force_windows: bool = False,
+) -> dict[str, Any]:
+    """Refresh metadata, canonical daily history and fixed provider windows."""
     video = await session.get(PublishedVideo, published_video_id)
     if video is None:
         raise YouTubeVideoNotFoundError("Published video record not found.")
@@ -205,6 +331,12 @@ async def sync_video(session: AsyncSession, published_video_id: uuid.UUID) -> di
             provider_rows[row.metric_date] = row
 
     upserted = await _upsert_rows(session, video.id, provider_rows.values())
+    windows = await sync_windows(
+        session,
+        video,
+        access_token,
+        force=force_windows,
+    )
     total_rows = await session.scalar(
         select(func.count())
         .select_from(YouTubeVideoDailyMetric)
@@ -234,6 +366,7 @@ async def sync_video(session: AsyncSession, published_video_id: uuid.UUID) -> di
         "rows_upserted": upserted,
         "total_rows": int(total_rows or 0),
         "latest_metric_date": latest_date.isoformat() if latest_date else None,
+        "windows": windows,
         "data_api_public_statistics": {
             "views": snapshot.view_count,
             "likes": snapshot.like_count,
@@ -279,8 +412,11 @@ def aggregate_rows(rows: list[YouTubeVideoDailyMetric]) -> dict[str, Any]:
     return result
 
 
-def derive_windows(rows: list[YouTubeVideoDailyMetric]) -> list[dict[str, Any]]:
-    """Derive D1/D3/D7/D28/D90 from the first API-returned reporting day."""
+def derive_windows(
+    rows: list[YouTubeVideoDailyMetric],
+    publication_date: date | None = None,
+) -> list[dict[str, Any]]:
+    """Project diagnostic windows from a stable publication reporting date."""
     if not rows:
         return [
             {
@@ -304,7 +440,7 @@ def derive_windows(rows: list[YouTubeVideoDailyMetric]) -> list[dict[str, Any]]:
         ]
 
     ordered = sorted(rows, key=lambda row: row.metric_date)
-    anchor = ordered[0].metric_date
+    anchor = publication_date or ordered[0].metric_date
     latest = ordered[-1].metric_date
     windows: list[dict[str, Any]] = []
     for days in WINDOW_DAYS:

@@ -6,7 +6,7 @@ invisible to migrations — a silent and annoying failure mode.
 """
 
 from app.db.base import Base
-from app.models.analytics import YouTubeVideoDailyMetric
+from app.models.analytics import YouTubeVideoDailyMetric, YouTubeVideoWindowMetric
 from app.models.channel import AppSetting, Channel
 from app.models.content import (
     ContentProject,
@@ -21,11 +21,17 @@ from app.models.content import (
     Script,
     VideoRender,
 )
+from app.models.content_intelligence import ContentFeatureProfile
 from app.models.enums import (
     AnalyticsFreshness,
+    AnalyticsWindowStatus,
+    AnalyticsWindowType,
     AssetOrigin,
     AssetType,
+    AudienceLevel,
     ConnectionStatus,
+    FeatureProvenance,
+    HookType,
     JobEventType,
     JobStatus,
     ProjectStatus,
@@ -34,6 +40,8 @@ from app.models.enums import (
     PublishState,
     QualityVerdict,
     RenderStatus,
+    TechnicalDepth,
+    TitleStyle,
 )
 from app.models.job import BackgroundJob, JobEvent
 from app.models.quota import ProviderQuotaUsage
@@ -41,14 +49,20 @@ from app.models.youtube import OAuthState, YouTubeConnection
 
 __all__ = [
     "AnalyticsFreshness",
+    "AnalyticsWindowStatus",
+    "AnalyticsWindowType",
     "AppSetting",
     "AssetOrigin",
     "AssetType",
+    "AudienceLevel",
     "BackgroundJob",
     "Base",
     "Channel",
     "ConnectionStatus",
+    "ContentFeatureProfile",
     "ContentProject",
+    "FeatureProvenance",
+    "HookType",
     "JobEvent",
     "JobEventType",
     "JobStatus",
@@ -69,7 +83,10 @@ __all__ = [
     "ResearchSource",
     "Scene",
     "Script",
+    "TechnicalDepth",
+    "TitleStyle",
     "VideoRender",
     "YouTubeConnection",
     "YouTubeVideoDailyMetric",
+    "YouTubeVideoWindowMetric",
 ]

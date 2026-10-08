@@ -89,6 +89,63 @@ class AnalyticsFreshness(StrEnum):
     ERROR = "ERROR"
 
 
+class AnalyticsWindowType(StrEnum):
+    """Fixed comparable lifecycle windows collected from YouTube."""
+
+    D1 = "D1"
+    D3 = "D3"
+    D7 = "D7"
+    D28 = "D28"
+    D90 = "D90"
+
+    @property
+    def days(self) -> int:
+        return int(self.value[1:])
+
+
+class AnalyticsWindowStatus(StrEnum):
+    PENDING = "PENDING"
+    AVAILABLE = "AVAILABLE"
+    ERROR = "ERROR"
+
+
+class FeatureProvenance(StrEnum):
+    SYSTEM_DERIVED = "SYSTEM_DERIVED"
+    MANUAL = "MANUAL"
+
+
+class HookType(StrEnum):
+    CURIOSITY_GAP = "curiosity_gap"
+    SURPRISING_FACT = "surprising_fact"
+    QUESTION = "question"
+    CONTRARIAN = "contrarian"
+    PROBLEM_SOLUTION = "problem_solution"
+    OTHER = "other"
+
+
+class TitleStyle(StrEnum):
+    CURIOSITY = "curiosity"
+    HOW_TO = "how_to"
+    QUESTION = "question"
+    LIST = "list"
+    WARNING = "warning"
+    DIRECT = "direct"
+    OTHER = "other"
+
+
+class AudienceLevel(StrEnum):
+    BEGINNER_GENERAL = "beginner_general"
+    INTERMEDIATE = "intermediate"
+    ADVANCED = "advanced"
+    MIXED = "mixed"
+
+
+class TechnicalDepth(StrEnum):
+    INTRODUCTORY = "introductory"
+    PRACTICAL = "practical"
+    DEEP_DIVE = "deep_dive"
+
+
 # ===========================================================================
 # Phase 2 — content production
 # ===========================================================================

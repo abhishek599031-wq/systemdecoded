@@ -180,7 +180,7 @@ export default function YouTubePanel() {
           <Field label="Subscribers" value={formatCount(status.channel.subscriber_count)} />
           <Field label="Videos" value={formatCount(status.channel.video_count)} />
           <Field
-            label="Token expires"
+            label="Access token expires"
             value={
               status.access_token_expires_at
                 ? new Date(status.access_token_expires_at).toLocaleTimeString()
@@ -194,7 +194,7 @@ export default function YouTubePanel() {
         <p className="mt-3 rounded-md bg-warn/10 px-3 py-2 text-xs text-warn">
           Some permissions were not granted:{" "}
           {status.missing_scopes.map((s) => s.split("/").pop()).join(", ")}. Reconnect and
-          accept all of them, or uploads will fail later.
+          accept all of them, or metadata and analytics collection may fail.
         </p>
       )}
 

@@ -40,6 +40,24 @@ def test_report_maps_headers_and_keeps_missing_metrics_null() -> None:
     assert "likes" not in rows[0].returned_metrics
 
 
+def test_aggregate_report_maps_provider_window_without_day() -> None:
+    metric = analytics_api.parse_aggregate_report(
+        {
+            "columnHeaders": [
+                {"name": "engagedViews"},
+                {"name": "estimatedMinutesWatched"},
+                {"name": "averageViewDuration"},
+            ],
+            "rows": [[10, 2, 16]],
+        }
+    )
+    assert metric is not None
+    assert metric.engaged_views == 10
+    assert metric.estimated_minutes_watched == Decimal("2")
+    assert metric.average_view_duration == Decimal("16")
+    assert metric.views is None
+
+
 def test_empty_report_without_rows_is_valid_no_data_yet() -> None:
     assert analytics_api.parse_report({"columnHeaders": [], "kind": "youtubeAnalytics"}) == []
 
@@ -77,6 +95,45 @@ async def test_reports_query_uses_owned_channel_video_day_and_all_metrics(monkey
     assert seen["sort"] == "day"
     assert seen["metrics"] == ",".join(analytics_api.METRICS)
     assert seen["authorization"] == "Bearer token"
+
+
+@pytest.mark.parametrize(
+    ("end_date", "window"),
+    [
+        (date(2026, 9, 8), "D1"),
+        (date(2026, 9, 10), "D3"),
+        (date(2026, 9, 14), "D7"),
+    ],
+)
+async def test_window_query_has_no_day_dimension(monkeypatch, end_date, window) -> None:
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(dict(request.url.params))
+        return httpx.Response(
+            200,
+            json={
+                "columnHeaders": [{"name": "views"}, {"name": "engagedViews"}],
+                "rows": [[12, 6]],
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.AsyncClient
+
+    def patched(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(analytics_api.httpx, "AsyncClient", patched)
+    metric = await analytics_api.fetch_video_window_metrics(
+        "token", "Q-CJWCG90qI", date(2026, 9, 8), end_date
+    )
+    assert metric is not None
+    assert "dimensions" not in seen, window
+    assert "sort" not in seen
+    assert seen["startDate"] == "2026-09-08"
+    assert seen["endDate"] == end_date.isoformat()
 
 
 @pytest.mark.parametrize(
@@ -155,15 +212,30 @@ def _metric(day: date, **values) -> YouTubeVideoDailyMetric:
     )
 
 
-def test_d1_and_d7_are_derived_from_first_returned_day() -> None:
+def test_d1_and_d7_are_derived_from_publication_reporting_day() -> None:
     start = date(2026, 9, 8)
     rows = [_metric(start + timedelta(days=i), views=i + 1, engaged_views=i + 1) for i in range(7)]
-    windows = {item["window"]: item for item in youtube_analytics.derive_windows(rows)}
+    windows = {
+        item["window"]: item
+        for item in youtube_analytics.derive_windows(rows, publication_date=start)
+    }
     assert windows["D1"]["views"] == 1
     assert windows["D1"]["complete"] is True
     assert windows["D7"]["views"] == 28
     assert windows["D7"]["days_present"] == 7
     assert windows["D7"]["complete"] is True
+
+
+def test_late_first_row_does_not_shift_diagnostic_window_anchor() -> None:
+    publication = date(2026, 9, 8)
+    rows = [_metric(date(2026, 9, 9), views=4, engaged_views=3)]
+    windows = {
+        item["window"]: item
+        for item in youtube_analytics.derive_windows(rows, publication_date=publication)
+    }
+    assert windows["D1"]["start_date"] == publication
+    assert windows["D1"]["views"] is None
+    assert windows["D1"]["complete"] is False
 
 
 def test_aggregate_averages_are_weighted_by_engaged_views() -> None:

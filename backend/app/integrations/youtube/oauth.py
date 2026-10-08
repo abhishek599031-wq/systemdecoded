@@ -43,12 +43,11 @@ TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 REVOKE_ENDPOINT = "https://oauth2.googleapis.com/revoke"
 USERINFO_ENDPOINT = "https://www.googleapis.com/oauth2/v3/userinfo"
 
-# Requested up front, including upload, so that passing the compliance audit
-# later does not require a second consent round trip (ARCH §13.1).
+# Current production workflow is read-only: channel/video metadata plus Analytics.
+# Upload permission is intentionally deferred until an implemented feature needs it.
 SCOPES = (
     "https://www.googleapis.com/auth/youtube.readonly",
     "https://www.googleapis.com/auth/yt-analytics.readonly",
-    "https://www.googleapis.com/auth/youtube.upload",
 )
 # Identifies which Google account authorised us, for display only.
 IDENTITY_SCOPES = ("openid", "email")
@@ -108,7 +107,10 @@ def build_authorization_request(redirect_uri: str | None = None) -> Authorizatio
         "code_challenge_method": "S256",
         "access_type": "offline",
         "prompt": "consent",
-        "include_granted_scopes": "true",
+        # This app uses one fixed consent flow, not incremental authorization.
+        # Keeping this false also prevents a previously granted, now-removed
+        # permission (such as youtube.upload) from being combined into a reconnect.
+        "include_granted_scopes": "false",
     }
     return AuthorizationRequest(
         authorization_url=f"{AUTH_ENDPOINT}?{urlencode(params)}",
@@ -224,7 +226,7 @@ def missing_scopes(granted: list[str]) -> list[str]:
     """Scopes we asked for but did not get.
 
     The consent screen lets a user untick individual permissions, so a
-    "successful" connection can still be unable to upload. Better to detect that
-    at connect time than at publish time.
+    "successful" connection can still lack metadata or analytics access. Detect
+    that at connect time rather than failing later in a provider job.
     """
     return [s for s in SCOPES if s not in set(granted)]

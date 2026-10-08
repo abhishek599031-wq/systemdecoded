@@ -23,10 +23,15 @@ from app.integrations.youtube.errors import (
 from app.jobs import queue
 from app.jobs.registry import get_definition
 from app.jobs.runner import run_job
-from app.models.analytics import YouTubeVideoDailyMetric
+from app.models.analytics import YouTubeVideoDailyMetric, YouTubeVideoWindowMetric
 from app.models.channel import Channel
 from app.models.content import ContentProject, PublishedVideo
-from app.models.enums import ConnectionStatus, JobStatus, ProjectStatus
+from app.models.enums import (
+    AnalyticsWindowStatus,
+    ConnectionStatus,
+    JobStatus,
+    ProjectStatus,
+)
 from app.models.youtube import YouTubeConnection
 from app.services import youtube_analytics
 
@@ -115,7 +120,13 @@ def _daily(day: int, *, views: int = 10, likes: int | None = 1):
     )
 
 
-def _mock_provider(monkeypatch, rows, *, channel_id: str = CHANNEL_ID):
+def _mock_provider(
+    monkeypatch,
+    rows,
+    *,
+    channel_id: str = CHANNEL_ID,
+    window_values=None,
+):
     async def fetch_video(access_token, youtube_video_id):
         assert access_token == "access-token"
         assert youtube_video_id == VIDEO_ID
@@ -124,8 +135,31 @@ def _mock_provider(monkeypatch, rows, *, channel_id: str = CHANNEL_ID):
     async def fetch_metrics(access_token, youtube_video_id, start_date, end_date):
         return [row for row in rows if start_date <= row.metric_date <= end_date]
 
+    async def fetch_window(access_token, youtube_video_id, start_date, end_date):
+        if window_values and (start_date, end_date) in window_values:
+            return window_values[(start_date, end_date)]
+        selected = [row for row in rows if start_date <= row.metric_date <= end_date]
+        if not selected:
+            return None
+        return analytics_api.AggregateMetric(
+            views=sum(row.views or 0 for row in selected),
+            engaged_views=sum(row.engaged_views or 0 for row in selected),
+            likes=sum(row.likes or 0 for row in selected),
+            comments=sum(row.comments or 0 for row in selected),
+            shares=sum(row.shares or 0 for row in selected),
+            subscribers_gained=sum(row.subscribers_gained or 0 for row in selected),
+            subscribers_lost=sum(row.subscribers_lost or 0 for row in selected),
+            estimated_minutes_watched=sum(
+                (row.estimated_minutes_watched or Decimal("0")) for row in selected
+            ),
+            average_view_duration=Decimal("20"),
+            average_view_percentage=Decimal("64.5"),
+            returned_metrics=frozenset(analytics_api.METRICS),
+        )
+
     monkeypatch.setattr(data_api, "fetch_video", fetch_video)
     monkeypatch.setattr(analytics_api, "fetch_daily_video_metrics", fetch_metrics)
+    monkeypatch.setattr(analytics_api, "fetch_video_window_metrics", fetch_window)
 
 
 async def test_initial_backfill_and_partial_availability(session, monkeypatch) -> None:
@@ -150,6 +184,23 @@ async def test_initial_backfill_and_partial_availability(session, monkeypatch) -
     assert dates == [date(2026, 9, 8), date(2026, 9, 9)]
 
 
+async def test_late_first_provider_day_does_not_redefine_d1(session, monkeypatch) -> None:
+    _, _, video, _ = await _setup(session)
+    _mock_provider(monkeypatch, [_daily(9), _daily(10)])
+
+    await youtube_analytics.sync_video(session, video.id)
+
+    rows = {
+        row.window_type: row
+        for row in (await session.execute(select(YouTubeVideoWindowMetric))).scalars()
+    }
+    assert rows["D1"].window_start_date == date(2026, 9, 8)
+    assert rows["D1"].window_end_date == date(2026, 9, 8)
+    assert rows["D1"].status == AnalyticsWindowStatus.PENDING
+    assert rows["D3"].window_start_date == date(2026, 9, 8)
+    assert rows["D3"].status == AnalyticsWindowStatus.PENDING
+
+
 async def test_repeated_sync_is_idempotent_and_updates_existing_day(session, monkeypatch) -> None:
     _, _, video, _ = await _setup(session)
     _mock_provider(monkeypatch, [_daily(8, views=10)])
@@ -160,6 +211,81 @@ async def test_repeated_sync_is_idempotent_and_updates_existing_day(session, mon
     assert await session.scalar(select(func.count()).select_from(YouTubeVideoDailyMetric)) == 1
     row = (await session.execute(select(YouTubeVideoDailyMetric))).scalars().one()
     assert row.views == 25
+
+
+async def test_authoritative_windows_are_idempotent_and_update_revisions(
+    session, monkeypatch
+) -> None:
+    _, _, video, _ = await _setup(session)
+    rows = [
+        analytics_api.DailyMetric(
+            metric_date=date(2026, 9, day),
+            views=12 if day == 8 else 1,
+            engaged_views=6 if day == 8 else 1,
+            estimated_minutes_watched=Decimal("1") if day == 8 else Decimal("0"),
+            average_view_duration=Decimal("19") if day == 8 else Decimal("10"),
+            returned_metrics=frozenset(analytics_api.METRICS),
+        )
+        for day in range(8, 15)
+    ]
+    ranges = {
+        (date(2026, 9, 8), date(2026, 9, 8)): analytics_api.AggregateMetric(
+            views=12,
+            engaged_views=6,
+            estimated_minutes_watched=Decimal("1"),
+            average_view_duration=Decimal("19"),
+            returned_metrics=frozenset(analytics_api.METRICS),
+        ),
+        (date(2026, 9, 8), date(2026, 9, 10)): analytics_api.AggregateMetric(
+            views=14,
+            engaged_views=8,
+            estimated_minutes_watched=Decimal("2"),
+            average_view_duration=Decimal("18"),
+            returned_metrics=frozenset(analytics_api.METRICS),
+        ),
+        (date(2026, 9, 8), date(2026, 9, 14)): analytics_api.AggregateMetric(
+            views=18,
+            engaged_views=10,
+            estimated_minutes_watched=Decimal("2"),
+            average_view_duration=Decimal("16"),
+            returned_metrics=frozenset(analytics_api.METRICS),
+        ),
+    }
+    _mock_provider(monkeypatch, rows, window_values=ranges)
+    await youtube_analytics.sync_video(session, video.id)
+    await youtube_analytics.sync_video(session, video.id)
+
+    stored = list(
+        (
+            await session.execute(
+                select(YouTubeVideoWindowMetric).order_by(YouTubeVideoWindowMetric.window_end_date)
+            )
+        ).scalars()
+    )
+    assert len(stored) == 5
+    by_type = {row.window_type: row for row in stored}
+    assert by_type["D1"].status == AnalyticsWindowStatus.AVAILABLE
+    assert by_type["D3"].status == AnalyticsWindowStatus.AVAILABLE
+    assert by_type["D7"].status == AnalyticsWindowStatus.AVAILABLE
+    assert by_type["D28"].status == AnalyticsWindowStatus.PENDING
+    assert by_type["D90"].status == AnalyticsWindowStatus.PENDING
+    # Daily integers sum to 1, but the provider's dimensionless D7 value is 2.
+    assert sum(row.estimated_minutes_watched or 0 for row in rows) == Decimal("1")
+    assert by_type["D7"].estimated_minutes_watched == Decimal("2")
+    assert by_type["D7"].average_view_duration == Decimal("16")
+
+    ranges[(date(2026, 9, 8), date(2026, 9, 14))] = analytics_api.AggregateMetric(
+        views=19,
+        engaged_views=11,
+        estimated_minutes_watched=Decimal("3"),
+        average_view_duration=Decimal("17"),
+        returned_metrics=frozenset(analytics_api.METRICS),
+    )
+    await youtube_analytics.sync_video(session, video.id, force_windows=True)
+    await session.refresh(by_type["D7"])
+    assert by_type["D7"].views == 19
+    assert by_type["D7"].estimated_minutes_watched == Decimal("3")
+    assert await session.scalar(select(func.count()).select_from(YouTubeVideoWindowMetric)) == 5
 
 
 async def test_missing_metric_remains_null_not_zero(session, monkeypatch) -> None:
@@ -225,6 +351,34 @@ async def test_daily_unique_constraint_and_published_video_fk(session) -> None:
             published_video_id=uuid.uuid4(),
             metric_date=date(2026, 9, 8),
             synced_at=now,
+        )
+    )
+    with pytest.raises(IntegrityError):
+        await session.flush()
+    await session.rollback()
+
+
+async def test_window_unique_constraint_and_published_video_fk(session) -> None:
+    _, _, video, _ = await _setup(session)
+    values = {
+        "published_video_id": video.id,
+        "window_type": "D7",
+        "status": AnalyticsWindowStatus.PENDING,
+        "window_start_date": date(2026, 9, 8),
+        "window_end_date": date(2026, 9, 14),
+        "provider": "youtube_analytics",
+    }
+    session.add_all([YouTubeVideoWindowMetric(**values), YouTubeVideoWindowMetric(**values)])
+    with pytest.raises(IntegrityError):
+        await session.flush()
+    await session.rollback()
+
+    session.add(
+        YouTubeVideoWindowMetric(
+            **{
+                **values,
+                "published_video_id": uuid.uuid4(),
+            }
         )
     )
     with pytest.raises(IntegrityError):

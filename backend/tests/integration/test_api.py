@@ -56,19 +56,20 @@ async def test_system_status_reports_integrations_honestly(client: AsyncClient) 
     assert integrations["youtube"]["connection_status"] == "NOT_CONNECTED"
     assert integrations["youtube"]["connected"] is False
     # The LLM providers genuinely are not built yet, and still say so.
-    assert integrations["llm"]["status"] == "not_implemented_until_phase_4"
+    assert integrations["llm"]["status"] == "not_implemented_until_phase_5"
 
 
-async def test_system_info_reports_implemented_phase_3_capabilities(
+async def test_system_info_reports_implemented_phase_4_capabilities(
     client: AsyncClient,
 ) -> None:
     body = (await client.get("/api/v1/system/info")).json()
-    assert body["phase"] == "3"
+    assert body["phase"] == "4"
     assert body["capabilities"]["youtube_oauth"] is True
     assert body["capabilities"]["media_production"] is True
     assert body["capabilities"]["manual_publication_reconciliation"] is True
     assert body["capabilities"]["youtube_upload"] is False
     assert body["capabilities"]["analytics"] is True
+    assert body["capabilities"]["content_intelligence"] is True
 
 
 # --------------------------------------------------------------------- jobs ---

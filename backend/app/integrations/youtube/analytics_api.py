@@ -51,6 +51,23 @@ class DailyMetric:
     returned_metrics: frozenset[str] | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class AggregateMetric:
+    """One dimensionless provider aggregate for an exact date range."""
+
+    views: int | None = None
+    engaged_views: int | None = None
+    likes: int | None = None
+    comments: int | None = None
+    shares: int | None = None
+    subscribers_gained: int | None = None
+    subscribers_lost: int | None = None
+    estimated_minutes_watched: Decimal | None = None
+    average_view_duration: Decimal | None = None
+    average_view_percentage: Decimal | None = None
+    returned_metrics: frozenset[str] | None = None
+
+
 def _integer(value: Any) -> int | None:
     if value is None:
         return None
@@ -113,24 +130,37 @@ def parse_report(payload: dict[str, Any]) -> list[DailyMetric]:
     return rows
 
 
-async def fetch_daily_video_metrics(
-    access_token: str,
-    youtube_video_id: str,
-    start_date: date,
-    end_date: date,
-) -> list[DailyMetric]:
-    """Fetch provider-day metrics for one owned video, ordered by day."""
-    if start_date > end_date:
-        return []
-    params = {
-        "ids": "channel==MINE",
-        "startDate": start_date.isoformat(),
-        "endDate": end_date.isoformat(),
-        "metrics": ",".join(METRICS),
-        "dimensions": "day",
-        "filters": f"video=={youtube_video_id}",
-        "sort": "day",
+def parse_aggregate_report(payload: dict[str, Any]) -> AggregateMetric | None:
+    """Parse the single row returned by a report without dimensions."""
+    headers = payload.get("columnHeaders") or []
+    names = [str(header.get("name")) for header in headers if isinstance(header, dict)]
+    raw_rows = payload.get("rows") or []
+    if not raw_rows:
+        return None
+    if len(raw_rows) != 1 or not isinstance(raw_rows[0], list):
+        raise ValueError("YouTube Analytics aggregate response must contain one row")
+    if "day" in names:
+        raise ValueError("YouTube Analytics aggregate response unexpectedly included day")
+    values = {
+        name: raw_rows[0][index] if index < len(raw_rows[0]) else None
+        for index, name in enumerate(names)
     }
+    return AggregateMetric(
+        views=_integer(values.get("views")),
+        engaged_views=_integer(values.get("engagedViews")),
+        likes=_integer(values.get("likes")),
+        comments=_integer(values.get("comments")),
+        shares=_integer(values.get("shares")),
+        subscribers_gained=_integer(values.get("subscribersGained")),
+        subscribers_lost=_integer(values.get("subscribersLost")),
+        estimated_minutes_watched=_decimal(values.get("estimatedMinutesWatched")),
+        average_view_duration=_decimal(values.get("averageViewDuration")),
+        average_view_percentage=_decimal(values.get("averageViewPercentage")),
+        returned_metrics=frozenset(names),
+    )
+
+
+async def _fetch_report(access_token: str, params: dict[str, str]) -> dict[str, Any]:
     try:
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
             response = await client.get(
@@ -154,4 +184,44 @@ async def fetch_daily_video_metrics(
         raise classify_api_error(response.status_code, payload)
     if not isinstance(payload, dict):
         raise ValueError("YouTube Analytics returned a non-object response")
-    return parse_report(payload)
+    return payload
+
+
+async def fetch_daily_video_metrics(
+    access_token: str,
+    youtube_video_id: str,
+    start_date: date,
+    end_date: date,
+) -> list[DailyMetric]:
+    """Fetch provider-day metrics for one owned video, ordered by day."""
+    if start_date > end_date:
+        return []
+    params = {
+        "ids": "channel==MINE",
+        "startDate": start_date.isoformat(),
+        "endDate": end_date.isoformat(),
+        "metrics": ",".join(METRICS),
+        "dimensions": "day",
+        "filters": f"video=={youtube_video_id}",
+        "sort": "day",
+    }
+    return parse_report(await _fetch_report(access_token, params))
+
+
+async def fetch_video_window_metrics(
+    access_token: str,
+    youtube_video_id: str,
+    start_date: date,
+    end_date: date,
+) -> AggregateMetric | None:
+    """Fetch the provider aggregate for one exact lifecycle window."""
+    if start_date > end_date:
+        return None
+    params = {
+        "ids": "channel==MINE",
+        "startDate": start_date.isoformat(),
+        "endDate": end_date.isoformat(),
+        "metrics": ",".join(METRICS),
+        "filters": f"video=={youtube_video_id}",
+    }
+    return parse_aggregate_report(await _fetch_report(access_token, params))

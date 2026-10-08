@@ -11,3 +11,4 @@ class AnalyticsSyncRequest(BaseModel):
     """Omit the ID to fan out across every eligible published video."""
 
     published_video_id: uuid.UUID | None = None
+    force_windows: bool = False

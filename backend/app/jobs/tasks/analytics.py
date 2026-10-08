@@ -21,6 +21,7 @@ from app.jobs import queue
 from app.jobs.context import JobContext
 from app.jobs.registry import job
 from app.models.channel import Channel
+from app.models.content import PublishedVideo
 from app.models.enums import AnalyticsFreshness, ConnectionStatus, JobStatus
 from app.models.job import BackgroundJob
 from app.services import youtube_analytics, youtube_connection
@@ -28,7 +29,12 @@ from app.services import youtube_analytics, youtube_connection
 ANALYTICS_RETRYABLE = (RetryableError, TransientGoogleError, RateLimitedError)
 
 
-async def enqueue_video_sync(session, published_video) -> tuple[BackgroundJob, bool]:
+async def enqueue_video_sync(
+    session,
+    published_video,
+    *,
+    force_windows: bool = False,
+) -> tuple[BackgroundJob, bool]:
     """Enqueue at most one active sync per project, race-safe within an hour."""
     existing = (
         await session.execute(
@@ -49,8 +55,14 @@ async def enqueue_video_sync(session, published_video) -> tuple[BackgroundJob, b
     return await queue.enqueue(
         session,
         "analytics.sync_video",
-        {"published_video_id": str(published_video.id)},
-        idempotency_key=f"analytics:video:{published_video.id}:{hour_slot}",
+        {
+            "published_video_id": str(published_video.id),
+            "force_windows": force_windows,
+        },
+        idempotency_key=(
+            f"analytics:video:{published_video.id}:{hour_slot}"
+            f"{':force' if force_windows else ''}"
+        ),
         project_id=published_video.project_id,
     )
 
@@ -76,7 +88,18 @@ async def sync_video(ctx: JobContext) -> dict[str, Any]:
         raise ValueError("analytics.sync_video requires a valid published_video_id") from exc
 
     try:
-        return await youtube_analytics.sync_video(ctx.session, published_video_id)
+        result = await youtube_analytics.sync_video(
+            ctx.session,
+            published_video_id,
+            force_windows=bool(ctx.payload.get("force_windows", False)),
+        )
+        from app.services import content_intelligence
+
+        video = await ctx.session.get(PublishedVideo, published_video_id)
+        if video is not None:
+            profile = await content_intelligence.refresh_profile(ctx.session, video.project_id)
+            result["feature_profile_id"] = str(profile.id)
+        return result
     except InvalidGrantError as exc:
         return {
             "status": AnalyticsFreshness.AUTH_EXPIRED.value,

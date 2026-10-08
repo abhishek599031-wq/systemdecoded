@@ -76,9 +76,21 @@ def test_authorization_url_requests_all_required_scopes() -> None:
         assert required in scope
 
 
-def test_upload_scope_is_requested_up_front() -> None:
-    """Asking now avoids a second consent round trip after the audit passes."""
-    assert "https://www.googleapis.com/auth/youtube.upload" in oauth.SCOPES
+def test_authorization_url_requests_only_current_read_scopes() -> None:
+    """Manual handoff needs metadata and analytics, never write access."""
+    assert set(oauth.SCOPES) == {
+        "https://www.googleapis.com/auth/youtube.readonly",
+        "https://www.googleapis.com/auth/yt-analytics.readonly",
+    }
+    assert "https://www.googleapis.com/auth/youtube.upload" not in oauth.SCOPES
+    assert "https://www.googleapis.com/auth/youtube" not in oauth.SCOPES
+    assert "https://www.googleapis.com/auth/youtube.force-ssl" not in oauth.SCOPES
+
+
+def test_authorization_url_does_not_combine_removed_grants() -> None:
+    """A reconnect must not silently restore a previously granted upload scope."""
+    params = parse_qs(urlparse(oauth.build_authorization_request().authorization_url).query)
+    assert params["include_granted_scopes"] == ["false"]
 
 
 def test_redirect_uri_is_echoed_for_exact_reuse() -> None:

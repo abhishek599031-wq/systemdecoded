@@ -4,7 +4,7 @@
 
 An autonomous YouTube content operations system for a technology edutainment channel.
 
-**Current status: Phase 3 — YouTube analytics data foundation.**
+**Current status: Phase 4 — Content Intelligence and learning-data foundation.**
 The system produces a finished, review-ready YouTube Short end to end: script →
 local TTS narration → timings measured from that audio → word-aligned captions →
 scene visuals rendered from HTML templates → FFmpeg composition → automated quality
@@ -40,6 +40,7 @@ Next.js studio, and YouTube OAuth with encrypted tokens.
 - [Roadmap](#roadmap)
 - [YouTube integration](#youtube-integration)
 - [YouTube analytics](#youtube-analytics)
+- [Content Intelligence](#content-intelligence)
 - [Troubleshooting](#troubleshooting)
 - [Known limitations](#known-limitations)
 - [Documentation](#documentation)
@@ -296,7 +297,7 @@ The defaults run the full local stack unedited.
 
 | Group | Key variables |
 |---|---|
-| App | `APP_NAME`, `ENVIRONMENT`, `DEBUG` |
+| App | `APP_NAME`, `ENVIRONMENT`, `APP_DEBUG` (mapped to the typed `DEBUG` setting) |
 | Database | `DATABASE_URL`, `POSTGRES_*`, `DB_POOL_SIZE` |
 | Logging | `LOG_LEVEL`, `LOG_FORMAT` (`console` \| `json`) |
 | Worker | `WORKER_ID`, `WORKER_CONCURRENCY`, `WORKER_JOB_TYPES`, `WORKER_HEARTBEAT_SECONDS` |
@@ -363,8 +364,8 @@ alembic upgrade head
 The initial migration seeds one `channel` row (deterministic UUID) so there is no
 startup race and no bootstrap step.
 
-Current head: `0006_youtube_analytics_daily` — canonical per-video daily YouTube
-Analytics metrics, following the publication-state hardening migrations.
+Current head: `0007_content_intelligence` — provider-authoritative fixed lifecycle
+windows plus versioned content feature profiles. Canonical daily history remains intact.
 
 ---
 
@@ -400,9 +401,16 @@ FastAPI on `:8000`. Interactive docs at `/docs`.
 | `GET /api/v1/analytics/overview` | Aggregate metrics for tracked published videos |
 | `GET /api/v1/analytics/videos` | Published-video summaries and freshness state |
 | `GET /api/v1/analytics/videos/{id}/daily` | Canonical daily metric time series |
-| `GET /api/v1/analytics/videos/{id}/windows` | Derived D1/D3/D7/D28/D90 windows |
+| `GET /api/v1/analytics/videos/{id}/windows` | Provider-authoritative D1/D3/D7/D28/D90 windows |
 | `GET /api/v1/analytics/videos/{id}/freshness` | Provider/job freshness details |
 | `POST /api/v1/analytics/sync` | Queue one-video or all-video analytics sync work |
+| `GET /api/v1/content-intelligence/records` | Learning-ready feature/performance records |
+| `GET /api/v1/content-intelligence/projects/{id}/profile` | One project's feature profile |
+| `PATCH /api/v1/content-intelligence/projects/{id}/profile` | Review manual editorial features |
+| `GET /api/v1/content-intelligence/videos/{id}/windows` | Fixed provider lifecycle windows |
+| `GET /api/v1/content-intelligence/videos/{id}/record` | Combined observational record |
+| `POST /api/v1/content-intelligence/videos/{id}/refresh` | Queue daily/window/feature refresh |
+| `GET /api/v1/content-intelligence/comparisons` | Sample-counted descriptive groups |
 
 **Error envelope.** Every failure, from any layer, serialises identically:
 
@@ -427,7 +435,9 @@ handling that request carries the same `request_id`.
 Next.js 15 App Router on `:3000`. The dashboard shows system and YouTube health, channel
 configuration, job counts, and live job history. The Review screen provides video/QC
 review, publishing metadata, and verified manual-upload reconciliation. The Analytics
-screen shows daily public and engaged views, operational freshness, and derived
+screen shows daily public and engaged views, operational freshness, and authoritative
+lifecycle windows. The Content Intelligence screen separates system-derived production
+facts from editable editorial classification and joins both to fixed-window performance.
 performance windows. Ideas/planning remain future phases.
 
 ```bash
@@ -658,8 +668,23 @@ Coverage of the foundation:
 | 14-day rolling refresh and historical-gap recovery | ✅ |
 | PostgreSQL-queued manual and scheduled sync | ✅ |
 | AVAILABLE / PENDING / UNAVAILABLE / AUTH_EXPIRED / ERROR states | ✅ |
-| Derived D1/D3/D7/D28/D90 windows | ✅ |
+| Provider-authoritative D1/D3/D7/D28/D90 windows | ✅ Phase 4 |
 | Operational Analytics page | ✅ |
+
+### Phase 4 — Content Intelligence and learning data ✅
+
+| Item | Status |
+|---|---|
+| Direct no-day lifecycle-window reports | ✅ |
+| Explicit pending/available/error window state | ✅ |
+| Idempotent fixed-window upsert and conservative refresh | ✅ |
+| Versioned Content Feature Profile | ✅ |
+| System-derived production features | ✅ |
+| Manual editorial classification and provenance | ✅ |
+| Combined observational learning-record API | ✅ |
+| Descriptive, sample-counted comparison helpers | ✅ |
+| Content Intelligence operational UI | ✅ |
+| Recommendations, rankings, autonomous strategy | intentionally deferred |
 
 ### Not built yet — and honestly labelled in the UI
 
@@ -675,8 +700,8 @@ LLM-assisted script generation · autonomous planner · experiments · insights.
 | **1** ✅ | YouTube connection | Channel connects; metadata auto-populates; token survives refresh |
 | **2** ✅ | One real video, end to end | **One real Short published on the real channel** |
 | **3** ✅ | Analytics ingestion | Idempotent per-video daily metrics landing daily |
-| **4** | LLM-assisted generation | A script produced by the pipeline with one paste step |
-| **5** | Research & quality gates | Every claim traceable to a cited source |
+| **4** ✅ | Content Intelligence | Creative choices join provider-authoritative lifecycle performance |
+| **5** | Strategy interpretation | Evidence-aware insights without causal overclaiming |
 | **6** | Autonomous planner | A 5-video backlog maintained with no "generate" click |
 | **7** | Learning loop | First evidence-backed strategy change, correctly sample-gated |
 | **8** | Progressive autonomy | Idea → ready with no human touch |
@@ -812,17 +837,37 @@ Sync behavior:
 Freshness is explicit: `AVAILABLE`, `PENDING`, `UNAVAILABLE`, `AUTH_EXPIRED`, or
 `ERROR`. Recent absent dates are pending provider data, not zero performance.
 
-D1, D3, D7, D28, and D90 are query-time projections anchored on the first day returned
-by the Analytics API. Additive metrics are summed only when every stored row in the
-window has that metric. Average duration and percentage are weighted by `engaged_views`;
-if every required denominator is not present, the aggregate is returned as unavailable
-instead of averaging daily averages. Each window reports its expected/present day count
-and whether all dates are present.
+D1, D3, D7, D28, and D90 are stored provider aggregates anchored on the video's
+YouTube/Pacific publication reporting day. They are fetched without a `day` dimension only after
+daily coverage reaches every required reporting date. This matters because YouTube
+returns some daily watch-time and average cells as integers: summing those quantized
+cells can differ from a direct range aggregate. Pending windows have null metrics and
+are never replaced by synthetic zeroes.
 
 The Analytics API does not consume YouTube Data API quota units. Each per-video sync
 does make one `videos.list` verification call, currently a one-unit Data API method.
 Analytics reports can lag recent activity, so the latest dates may legitimately be
 absent until YouTube finalizes them.
+
+---
+
+## Content Intelligence
+
+Phase 4 answers “what did we try, and what happened?” One `ContentFeatureProfile` is
+anchored to each project and carries `profile_version=1`. Objective values—render and
+narration duration, scene and word counts, actual voice provenance, TTS speed, caption
+events, resolution, templates, format, and published title—are refreshed from current
+production records. Missing structured facts remain null instead of being guessed.
+
+Editorial values such as topic, hook type, title style, audience level, technical depth,
+and explanation pattern are reviewed manually. `field_provenance` keeps
+`SYSTEM_DERIVED` facts distinct from `MANUAL` labels. There is no production LLM
+classifier in this phase.
+
+Learning records join the feature profile to stored fixed-window results. Filtering and
+descriptive grouping expose `videos_in_group` and `complete_windows_available`; they do
+not rank strategies, recommend content, claim causation, or generalize from the current
+single-video sample. Those interpretation and decision layers are deferred to Phase 5.
 
 ---
 

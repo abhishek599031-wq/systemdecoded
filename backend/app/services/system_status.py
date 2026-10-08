@@ -15,8 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.clock import utcnow
-from app.models.analytics import YouTubeVideoDailyMetric
+from app.models.analytics import YouTubeVideoDailyMetric, YouTubeVideoWindowMetric
 from app.models.channel import AppSetting, Channel
+from app.models.content_intelligence import ContentFeatureProfile
 from app.models.enums import ConnectionStatus, JobStatus
 from app.models.job import BackgroundJob
 
@@ -126,6 +127,12 @@ async def get_system_status(session: AsyncSession) -> dict[str, Any]:
     analytics_last_sync = await session.scalar(
         select(func.max(YouTubeVideoDailyMetric.synced_at))
     )
+    window_rows = await session.scalar(
+        select(func.count()).select_from(YouTubeVideoWindowMetric)
+    )
+    feature_profiles = await session.scalar(
+        select(func.count()).select_from(ContentFeatureProfile)
+    )
 
     return {
         "status": "healthy" if revision else "degraded",
@@ -155,15 +162,17 @@ async def get_system_status(session: AsyncSession) -> dict[str, Any]:
                 "implemented": True,
                 "enabled": bool(channel and channel.analytics_enabled),
                 "daily_rows": int(analytics_rows or 0),
+                "window_rows": int(window_rows or 0),
+                "feature_profiles": int(feature_profiles or 0),
                 "latest_row_sync_at": (
                     analytics_last_sync.isoformat() if analytics_last_sync else None
                 ),
-                "source_of_truth": "daily_metrics",
+                "source_of_truth": "daily_time_series_plus_provider_fixed_windows",
             },
             "llm": {
                 "mechanical_mode": settings.LLM_MECHANICAL_MODE,
                 "creative_mode": settings.LLM_CREATIVE_MODE,
-                "status": "not_implemented_until_phase_4",
+                "status": "not_implemented_until_phase_5",
             },
         },
         "config_problems": settings.validate_runtime(),

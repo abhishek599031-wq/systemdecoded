@@ -13,7 +13,10 @@ name: systemdecoded
 x-backend-env: &backend-env
   DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://systemdecoded:systemdecoded@postgres:5432/systemdecoded}
   ENVIRONMENT: ${ENVIRONMENT:-development}
-  DEBUG: ${DEBUG:-true}
+  # APP_DEBUG avoids collisions with generic host-level DEBUG variables (for
+  # example DEBUG=release). The application still receives its typed DEBUG
+  # setting, but Compose interpolation is now project-specific.
+  DEBUG: ${APP_DEBUG:-true}
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
   LOG_FORMAT: ${LOG_FORMAT:-console}
   MEDIA_ROOT: /media

@@ -15,7 +15,7 @@ from app.core.errors import ConflictError, NotFoundError
 from app.db.session import get_db
 from app.jobs import queue
 from app.jobs.tasks.analytics import enqueue_video_sync
-from app.models.analytics import YouTubeVideoDailyMetric
+from app.models.analytics import YouTubeVideoDailyMetric, YouTubeVideoWindowMetric
 from app.models.channel import Channel
 from app.models.content import PublishedVideo
 from app.schemas.analytics import AnalyticsSyncRequest
@@ -47,6 +47,20 @@ async def _rows(db: AsyncSession, published_video_id: uuid.UUID) -> list[YouTube
                 select(YouTubeVideoDailyMetric)
                 .where(YouTubeVideoDailyMetric.published_video_id == published_video_id)
                 .order_by(YouTubeVideoDailyMetric.metric_date)
+            )
+        ).scalars()
+    )
+
+
+async def _window_rows(
+    db: AsyncSession, published_video_id: uuid.UUID
+) -> list[YouTubeVideoWindowMetric]:
+    return list(
+        (
+            await db.execute(
+                select(YouTubeVideoWindowMetric)
+                .where(YouTubeVideoWindowMetric.published_video_id == published_video_id)
+                .order_by(YouTubeVideoWindowMetric.window_end_date)
             )
         ).scalars()
     )
@@ -131,11 +145,37 @@ async def performance_windows(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict[str, Any]:
     video = await _video(db, published_video_id)
-    windows = youtube_analytics.derive_windows(await _rows(db, video.id))
+    daily_rows = await _rows(db, video.id)
+    daily_dates = {row.metric_date for row in daily_rows}
+    windows = []
+    for row in await _window_rows(db, video.id):
+        expected = (row.window_end_date - row.window_start_date).days + 1
+        present = sum(row.window_start_date <= day <= row.window_end_date for day in daily_dates)
+        windows.append(
+            {
+                "window": row.window_type,
+                "status": row.status,
+                "start_date": row.window_start_date,
+                "end_date": row.window_end_date,
+                "days_present": present,
+                "days_expected": expected,
+                "complete": row.status == "AVAILABLE",
+                **{
+                    field: getattr(row, field)
+                    for field in (
+                        *youtube_analytics.ADDITIVE_FIELDS,
+                        "average_view_duration",
+                        "average_view_percentage",
+                    )
+                },
+                "provider": row.provider,
+                "synced_at": row.synced_at,
+            }
+        )
     return {
         "published_video_id": video.id,
-        "anchor_semantics": "first_api_returned_reporting_day",
-        "average_weight": "engaged_views",
+        "anchor_semantics": "youtube_pacific_publication_reporting_day",
+        "metric_semantics": "provider_aggregate_without_day_dimension",
         "items": [_metrics_json(window) for window in windows],
     }
 
@@ -162,7 +202,11 @@ async def sync(
 
     if body.published_video_id is not None:
         video = await _video(db, body.published_video_id)
-        job_obj, created = await enqueue_video_sync(db, video)
+        job_obj, created = await enqueue_video_sync(
+            db,
+            video,
+            force_windows=body.force_windows,
+        )
     else:
         hour_slot = int(utcnow().timestamp()) // 3600 * 3600
         job_obj, created = await queue.enqueue(
