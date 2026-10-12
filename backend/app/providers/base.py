@@ -14,7 +14,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar
+
+from pydantic import BaseModel
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,6 +151,32 @@ class VideoResult:
     peak_dbfs: float | None = None
 
 
+# ----------------------------------------------------------------------- llm ---
+# LLM results deliberately stay provider-neutral. Phase 6A will decide what to
+# do with a response, but the provider boundary already records enough evidence
+# to explain which local model produced it and how it behaved.
+@dataclass(frozen=True, slots=True)
+class LLMResult:
+    text: str
+    provider: str
+    model: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def as_metadata(self) -> dict[str, Any]:
+        """Return serialisable provenance for a later persisted planner record."""
+        return {"provider": self.provider, "model": self.model, **self.metadata}
+
+
+TStructured = TypeVar("TStructured", bound=BaseModel)
+
+
+@dataclass(frozen=True, slots=True)
+class StructuredLLMResult:
+    value: TStructured
+    raw: LLMResult
+    attempts: int
+
+
 # ------------------------------------------------------------------ protocols ---
 class TTSProvider(Protocol):
     name: str
@@ -193,3 +221,26 @@ class VideoCompositor(Protocol):
     name: str
 
     async def compose(self, spec: CompositionSpec) -> VideoResult: ...
+
+
+class LLMProvider(Protocol):
+    """Text and schema-validated local language-model inference."""
+
+    name: str
+
+    async def generate_text(
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        model: str | None = None,
+    ) -> LLMResult: ...
+
+    async def generate_structured(
+        self,
+        prompt: str,
+        schema: type[TStructured],
+        *,
+        system: str | None = None,
+        model: str | None = None,
+    ) -> StructuredLLMResult[TStructured]: ...

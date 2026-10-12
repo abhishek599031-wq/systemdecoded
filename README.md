@@ -306,7 +306,7 @@ The defaults run the full local stack unedited.
 | Scheduler | `SCHEDULER_ENABLED`, `SCHEDULER_TIMEZONE` |
 | Secrets | `SECRETS_KEY` (encrypts OAuth tokens; required in production) |
 | YouTube | `YOUTUBE_API_ENABLED`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI` |
-| LLM | `LLM_MECHANICAL_MODE`, `LLM_CREATIVE_MODE`, `LLM_LOCAL_*` |
+| Local LLM | `LOCAL_LLM_PROVIDER`, `OLLAMA_BASE_URL`, `PRIMARY_PLANNER_MODEL`, `FAST_UTILITY_MODEL`, `FALLBACK_MODEL`, `LLM_CONTEXT_LIMIT`, `LLM_TIMEOUT` |
 
 **The application starts and runs fully with all YouTube and LLM values blank.** Those
 endpoints report themselves as unconfigured rather than failing or faking data.

@@ -167,9 +167,21 @@ class Settings(BaseSettings):
     # Refresh an access token once it is within this window of expiring.
     OAUTH_REFRESH_SKEW_SECONDS: int = Field(default=600, ge=60)
 
-    # -------------------------------------------------------- llm (phase 4) ---
-    LLM_LOCAL_BASE_URL: str = "http://host.docker.internal:11434"
-    LLM_LOCAL_MODEL: str = "qwen2.5:7b-instruct"
+    # ------------------------------------------------------- local llm (6A.0) ---
+    # Local inference is intentionally the only implemented LLM path. Ollama
+    # needs no API key and its Windows service binds to localhost by default.
+    LOCAL_LLM_PROVIDER: Literal["ollama"] = "ollama"
+    OLLAMA_BASE_URL: str = "http://host.docker.internal:11434"
+    PRIMARY_PLANNER_MODEL: str = "ministral-3:8b"
+    FAST_UTILITY_MODEL: str = "qwen3.5:4b"
+    FALLBACK_MODEL: str = "qwen3.5:9b"
+    LLM_CONTEXT_LIMIT: int = Field(default=8192, ge=1024, le=16384)
+    LLM_TIMEOUT: float = Field(default=120.0, gt=0.0, le=600.0)
+    LLM_MAX_ATTEMPTS: int = Field(default=2, ge=1, le=3)
+    # Unload after a response by default. This prevents an idle LLM from
+    # competing with Chatterbox on an 8 GB GPU; benchmark tooling can override
+    # it for a warm-run measurement.
+    OLLAMA_KEEP_ALIVE: str = "0s"
     LLM_CREATIVE_MODE: Literal["local", "manual", "external_api"] = "manual"
     LLM_MECHANICAL_MODE: Literal["local", "manual", "external_api"] = "local"
 

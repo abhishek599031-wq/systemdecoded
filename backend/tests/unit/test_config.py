@@ -73,6 +73,18 @@ def test_defaults_apply_when_absent(tmp_path: Path) -> None:
     assert settings.WORKER_JOB_TYPES == []
 
 
+def test_local_llm_defaults_are_bounded_and_need_no_api_key() -> None:
+    settings = _settings_kwargs()
+    assert settings.LOCAL_LLM_PROVIDER == "ollama"
+    assert settings.OLLAMA_BASE_URL == "http://host.docker.internal:11434"
+    assert settings.PRIMARY_PLANNER_MODEL == "ministral-3:8b"
+    assert settings.FAST_UTILITY_MODEL == "qwen3.5:4b"
+    assert settings.FALLBACK_MODEL == "qwen3.5:9b"
+    assert settings.LLM_CONTEXT_LIMIT == 8192
+    assert settings.LLM_TIMEOUT == 120.0
+    assert not hasattr(settings, "OLLAMA_API_KEY")
+
+
 # ----------------------------------------------------------- runtime checks ---
 def test_development_defaults_are_valid() -> None:
     assert _settings_kwargs(ENVIRONMENT="development").validate_runtime() == []

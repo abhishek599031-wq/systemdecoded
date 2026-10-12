@@ -55,8 +55,9 @@ async def test_system_status_reports_integrations_honestly(client: AsyncClient) 
     assert integrations["youtube"]["status"] == "implemented"
     assert integrations["youtube"]["connection_status"] == "NOT_CONNECTED"
     assert integrations["youtube"]["connected"] is False
-    # The LLM providers genuinely are not built yet, and still say so.
-    assert integrations["llm"]["status"] == "not_implemented_until_phase_5"
+    # The local provider is ready, while the Phase 6A planner remains absent.
+    assert integrations["llm"]["status"] == "local_provider_ready_planner_not_started"
+    assert integrations["llm"]["provider"] == "ollama"
 
 
 async def test_system_info_reports_implemented_phase_4_capabilities(

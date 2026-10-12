@@ -86,7 +86,16 @@ export interface SystemStatus {
       latest_row_sync_at: string | null;
       source_of_truth: string;
     };
-    llm: { mechanical_mode: string; creative_mode: string; status: string };
+    llm: {
+      provider: string;
+      primary_planner_model: string;
+      fast_utility_model: string;
+      fallback_model: string;
+      context_limit: number;
+      mechanical_mode: string;
+      creative_mode: string;
+      status: string;
+    };
   };
   config_problems?: string[];
 }
