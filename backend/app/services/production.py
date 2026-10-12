@@ -55,13 +55,13 @@ from app.providers.alignment.faster_whisper import FasterWhisperAligner
 from app.providers.base import (
     CompositionScene,
     CompositionSpec,
-    SceneRenderSpec,
     VoiceSpec,
     WordTiming,
 )
 from app.providers.compositor import captions as caption_builder
 from app.providers.compositor.ffmpeg import FFmpegCompositor
 from app.providers.renderer.playwright_frames import PlaywrightFrameRenderer
+from app.providers.renderer.scene_contract import build_scene_spec, payload_digest
 from app.providers.tts.resolver import ResilientTTS, build_provider, voice_for
 from app.services import quota
 from app.services.canonical_alignment import AlignmentQuality, align_to_canonical
@@ -446,6 +446,9 @@ async def _synthesize_blocks(
                 "segments": len(parts),
                 "whole_block": whole_block,
                 "speed": voice.speed,
+                "text": unit.text if whole_block else scene.narration,
+                "project_id": str(project.id),
+                "scene_id": str(scene.id),
                 # Set when the whole narration was re-read by the fallback, so
                 # a stored asset always says what actually produced it.
                 **(
@@ -651,14 +654,15 @@ async def render_scenes(
     out_dir = project_dir(project.id) / "frames"
     out_dir.mkdir(parents=True, exist_ok=True)
     rendered: dict[int, list[Path]] = {}
+    script = await current_script(session, project)
 
     async with PlaywrightFrameRenderer(fps=settings.VIDEO_FPS) as renderer:
         for part in parts:
             scene = part.scene
-            spec = SceneRenderSpec(
-                scene_number=scene.scene_number,
-                template_id=scene.template_id,
-                props=dict(scene.template_props or {}),
+            spec = build_scene_spec(
+                project,
+                script,
+                scene,
                 width=settings.VIDEO_WIDTH,
                 height=settings.VIDEO_HEIGHT,
             )
@@ -681,6 +685,9 @@ async def render_scenes(
                     "frame_count": len(result.frames),
                     "fps": settings.VIDEO_FPS,
                     "directory": str(result.frames[0].parent),
+                    "script_id": spec.script_id,
+                    "scene_id": spec.scene_id,
+                    "payload_sha256": payload_digest(spec),
                 },
             )
     await session.flush()

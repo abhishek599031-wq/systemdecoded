@@ -21,6 +21,7 @@ from app.config import settings
 from app.core.errors import RetryableError, TerminalError
 from app.core.logging import get_logger
 from app.providers.base import SceneRenderResult, SceneRenderSpec
+from app.providers.renderer.scene_contract import payload_digest, validate_template_payload
 
 log = get_logger("renderer.frames")
 
@@ -87,7 +88,14 @@ class PlaywrightFrameRenderer:
             raise TerminalError(f"Scene {spec.scene_number} needs a measured duration to render")
 
         template = self.template_path(spec.template_id)
-        scene_dir = out_dir / f"scene_{spec.scene_number:02d}"
+        validate_template_payload(template.parent, spec.props)
+        # Scope by immutable ownership, not just ordinal.  A new script may also
+        # have a scene 02; it must never see the old script's frame directory.
+        scene_dir = (
+            out_dir
+            / spec.script_id
+            / f"scene_{spec.scene_number:02d}_{spec.scene_id}"
+        )
         scene_dir.mkdir(parents=True, exist_ok=True)
         for stale in scene_dir.glob("*.png"):
             stale.unlink()
@@ -100,6 +108,12 @@ class PlaywrightFrameRenderer:
         try:
             await page.add_init_script(
                 f"window.__PROPS__ = {__import__('json').dumps(spec.props)};"
+                f"window.__RENDER_CONTEXT__ = {__import__('json').dumps({
+                    'project_id': spec.project_id,
+                    'script_id': spec.script_id,
+                    'scene_id': spec.scene_id,
+                    'payload_sha256': payload_digest(spec),
+                })};"
             )
             await page.goto(template.as_uri(), wait_until="load")
             # Fonts must be settled before the first capture, or text reflows
@@ -133,6 +147,10 @@ class PlaywrightFrameRenderer:
             "renderer.scene_frames",
             scene=spec.scene_number,
             template=spec.template_id,
+            project_id=spec.project_id,
+            script_id=spec.script_id,
+            scene_id=spec.scene_id,
+            payload_sha256=payload_digest(spec),
             frames=len(frames),
             duration=round(duration, 2),
         )

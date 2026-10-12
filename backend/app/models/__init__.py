@@ -30,6 +30,8 @@ from app.models.enums import (
     AssetType,
     AudienceLevel,
     ConnectionStatus,
+    ExperimentComparisonStatus,
+    ExperimentStatus,
     FeatureProvenance,
     HookType,
     JobEventType,
@@ -43,6 +45,7 @@ from app.models.enums import (
     TechnicalDepth,
     TitleStyle,
 )
+from app.models.experiments import ContentExperiment
 from app.models.job import BackgroundJob, JobEvent
 from app.models.quota import ProviderQuotaUsage
 from app.models.youtube import OAuthState, YouTubeConnection
@@ -59,8 +62,11 @@ __all__ = [
     "Base",
     "Channel",
     "ConnectionStatus",
+    "ContentExperiment",
     "ContentFeatureProfile",
     "ContentProject",
+    "ExperimentComparisonStatus",
+    "ExperimentStatus",
     "FeatureProvenance",
     "HookType",
     "JobEvent",

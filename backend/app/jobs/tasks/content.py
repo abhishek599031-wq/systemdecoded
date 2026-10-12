@@ -20,7 +20,7 @@ from app.jobs.context import JobContext
 from app.jobs.registry import job
 from app.models.content import ContentProject, VideoRender
 from app.models.enums import ProjectStatus, QualityVerdict
-from app.services import production, publishing, quality
+from app.services import experiments, production, publishing, quality
 
 PRODUCTION_RETRYABLE = (RetryableError,)
 
@@ -121,6 +121,7 @@ async def produce_video(ctx: JobContext) -> dict[str, Any]:
         reason=f"Render complete ({check.verdict})",
         job_id=ctx.job_id,
     )
+    await experiments.mark_produced(ctx.session, project.id)
 
     return {
         "render_id": str(render.id),

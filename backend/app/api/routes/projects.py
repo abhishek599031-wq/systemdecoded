@@ -34,7 +34,7 @@ from app.models.content import (
 )
 from app.models.enums import ProjectStatus
 from app.schemas.project import ManualPublicationConfirmation
-from app.services import publication_reconciliation, publishing
+from app.services import experiments, publication_reconciliation, publishing
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -323,6 +323,11 @@ async def produce(
     elif project.status == ProjectStatus.NEEDS_REVISION:
         await transition(db, project, ProjectStatus.RENDERING,
                          actor="HUMAN", reason="Retrying production")
+
+    # A planned experiment follows the existing production queue.  This hook
+    # records the lifecycle intent without changing rendering, QC, or quota
+    # behavior; the worker advances it after a successful production run.
+    await experiments.mark_in_production(db, project.id)
 
     job_obj, created = await queue.enqueue(
         db, "content.produce_video", {"project_id": str(project.id)}, project_id=project.id

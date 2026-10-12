@@ -24,9 +24,15 @@ build/
 dist/
 
 # ------------------------------------------------------------------ node ---
+# Dependencies may exist in multiple nested frontend/POC workspaces.
 node_modules/
+**/node_modules/
 .next/
 out/
+**/.next/
+**/out/
+media_engine/motion_canvas/output/
+media_engine/motion_canvas/output-*/
 npm-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
@@ -43,13 +49,25 @@ next-env.d.ts
 media/renders/*
 media/cache/*
 media/assets/*
+# Local auditions and renderer proofs are review artifacts, not fixtures.
+media/pocs/
 !media/renders/.gitkeep
 !media/cache/.gitkeep
 !media/assets/.gitkeep
 
 # ------------------------------------------------------------------- misc ---
+# Local POC virtual environments/model caches are never source files.
+.poc/
+**/.poc/
+**/__pycache__/
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
 *.log
+.poc
+*.poc/
+chatterbox-cache/

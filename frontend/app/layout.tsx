@@ -12,6 +12,7 @@ const NAV = [
   { label: "Ideas", href: "#", active: false, phase: 4 },
   { label: "Analytics", href: "/analytics", active: true },
   { label: "Content Intelligence", href: "/content-intelligence", active: true },
+  { label: "Experiments", href: "/experiments", active: true },
 ];
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -48,7 +49,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 )}
               </nav>
               <div className="ml-auto rounded-full border border-ink-700 px-3 py-1 text-xs text-ink-300">
-                Phase 4 — Learning Data
+                Phase 5 — Experiments
               </div>
             </div>
           </header>

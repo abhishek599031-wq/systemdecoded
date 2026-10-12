@@ -146,6 +146,25 @@ class TechnicalDepth(StrEnum):
     DEEP_DIVE = "deep_dive"
 
 
+class ExperimentStatus(StrEnum):
+    """Intent lifecycle for a controlled content experiment."""
+
+    DRAFT = "DRAFT"
+    PLANNED = "PLANNED"
+    IN_PRODUCTION = "IN_PRODUCTION"
+    PRODUCED = "PRODUCED"
+    PUBLISHED = "PUBLISHED"
+    MEASURING = "MEASURING"
+    MEASURED = "MEASURED"
+    CANCELLED = "CANCELLED"
+
+
+class ExperimentComparisonStatus(StrEnum):
+    MATCH = "MATCH"
+    DEVIATED = "DEVIATED"
+    UNKNOWN = "UNKNOWN"
+
+
 # ===========================================================================
 # Phase 2 — content production
 # ===========================================================================

@@ -99,6 +99,9 @@ async def sync_video(ctx: JobContext) -> dict[str, Any]:
         if video is not None:
             profile = await content_intelligence.refresh_profile(ctx.session, video.project_id)
             result["feature_profile_id"] = str(profile.id)
+            from app.services import experiments
+
+            await experiments.mark_measurement_progress(ctx.session, video.project_id)
         return result
     except InvalidGrantError as exc:
         return {

@@ -51,6 +51,7 @@ from app.models.enums import (
 if TYPE_CHECKING:  # pragma: no cover
     from app.models.analytics import YouTubeVideoDailyMetric, YouTubeVideoWindowMetric
     from app.models.content_intelligence import ContentFeatureProfile
+    from app.models.experiments import ContentExperiment
 
 
 class ContentProject(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -108,6 +109,12 @@ class ContentProject(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         lazy="selectin",
     )
     feature_profile: Mapped[ContentFeatureProfile | None] = relationship(
+        back_populates="project",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+    experiment: Mapped[ContentExperiment | None] = relationship(
+        foreign_keys="ContentExperiment.project_id",
         back_populates="project",
         cascade="all, delete-orphan",
         uselist=False,

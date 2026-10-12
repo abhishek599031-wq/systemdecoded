@@ -85,7 +85,9 @@ class Settings(BaseSettings):
     # Defaults come from the SystemDecoded narration profile so provider, model,
     # voice and performance direction stay one decision rather than four
     # independently drifting settings (app/providers/tts/profile.py).
-    TTS_PROVIDER: Literal["gemini", "kokoro"] = _NARRATION.provider  # type: ignore[assignment]
+    TTS_PROVIDER: Literal[
+        "gemini", "kokoro", "chatterbox", "chatterbox-turbo"
+    ] = _NARRATION.provider  # type: ignore[assignment]
     TTS_FALLBACK_PROVIDER: Literal["kokoro", "none"] = _NARRATION.fallback_provider  # type: ignore[assignment]
 
     # SecretStr so the key cannot leak through a repr, a log line, an exception
@@ -112,6 +114,18 @@ class Settings(BaseSettings):
     TTS_VOICE: str = "am_puck"
     TTS_SPEED: float = Field(default=0.92, gt=0.4, le=2.0)
     TTS_LANG: str = "en-us"
+    # Approved Phase 5.1 candidate settings. It remains opt-in until the full
+    # production migration is authorized.
+    CHATTERBOX_MODEL: str = "ResembleAI/chatterbox"
+    CHATTERBOX_TURBO_MODEL: str = "ResembleAI/chatterbox-turbo"
+    CHATTERBOX_DEVICE: Literal["cuda", "cpu"] = "cuda"
+    CHATTERBOX_REFERENCE_AUDIO: str = ""
+    CHATTERBOX_EXAGGERATION: float = Field(default=0.5, ge=0.0, le=2.0)
+    CHATTERBOX_CFG_WEIGHT: float = Field(default=0.4, ge=0.0, le=1.0)
+    CHATTERBOX_TEMPERATURE: float = Field(default=0.8, gt=0.0, le=2.0)
+    CHATTERBOX_REPETITION_PENALTY: float = Field(default=1.2, ge=1.0, le=3.0)
+    CHATTERBOX_MIN_P: float = Field(default=0.05, ge=0.0, le=1.0)
+    CHATTERBOX_TOP_P: float = Field(default=1.0, gt=0.0, le=1.0)
     ALIGNMENT_MODEL: str = "base.en"
 
     VIDEO_WIDTH: int = 1080

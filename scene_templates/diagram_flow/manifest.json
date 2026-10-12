@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "purpose": "Explicit node and link flow",
+  "required_props": ["eyebrow", "title", "nodes", "links"]
+}

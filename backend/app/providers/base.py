@@ -83,8 +83,16 @@ class AlignmentResult:
 
 @dataclass(frozen=True, slots=True)
 class SceneRenderSpec:
-    """What to render for one scene."""
+    """Immutable, fully-scoped input for one scene render.
 
+    Identity travels with the payload so a renderer cannot infer it from a
+    directory, a previous invocation, or global state.  The IDs are strings on
+    purpose: providers may live outside the Python process later.
+    """
+
+    project_id: str
+    script_id: str
+    scene_id: str
     scene_number: int
     template_id: str
     props: dict[str, Any]

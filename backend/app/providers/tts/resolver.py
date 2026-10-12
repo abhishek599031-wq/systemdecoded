@@ -25,6 +25,7 @@ from app.config import settings
 from app.core.errors import QuotaExhaustedError, RetryableError, TerminalError
 from app.core.logging import get_logger
 from app.providers.base import AudioResult, TTSProvider, VoiceSpec
+from app.providers.tts.chatterbox import ChatterboxOriginalTTS, ChatterboxTurboTTS
 from app.providers.tts.gemini import GeminiTTS, sleep_backoff
 from app.providers.tts.kokoro import KokoroTTS
 
@@ -42,7 +43,14 @@ def build_provider(name: str) -> TTSProvider:
         return GeminiTTS()
     if name == "kokoro":
         return KokoroTTS()
-    raise TerminalError(f"Unknown TTS provider {name!r}. Expected 'gemini' or 'kokoro'.")
+    if name == "chatterbox":
+        return ChatterboxOriginalTTS()
+    if name == "chatterbox-turbo":
+        return ChatterboxTurboTTS()
+    raise TerminalError(
+        f"Unknown TTS provider {name!r}. "
+        "Expected 'gemini', 'kokoro', 'chatterbox', or 'chatterbox-turbo'."
+    )
 
 
 def voice_for(provider_name: str) -> VoiceSpec:
@@ -54,6 +62,14 @@ def voice_for(provider_name: str) -> VoiceSpec:
     """
     if provider_name == "gemini":
         return VoiceSpec(voice=settings.GEMINI_TTS_VOICE, speed=1.0, lang=settings.TTS_LANG)
+    if provider_name == "chatterbox-turbo":
+        return VoiceSpec(
+            voice=settings.CHATTERBOX_REFERENCE_AUDIO,
+            speed=1.0,
+            lang=settings.TTS_LANG,
+        )
+    if provider_name == "chatterbox":
+        return VoiceSpec(voice="builtin-default", speed=1.0, lang=settings.TTS_LANG)
     return VoiceSpec(voice=settings.TTS_VOICE, speed=settings.TTS_SPEED, lang=settings.TTS_LANG)
 
 

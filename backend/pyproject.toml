@@ -32,6 +32,11 @@ media = [
     "soundfile>=0.12",
     "numpy>=1.26",
 ]
+# Experimental local GPU TTS. Kept separate from `media` so the production
+# worker does not acquire a multi-gigabyte torch/CUDA stack until approved.
+chatterbox = [
+    "chatterbox-tts==0.1.7",
+]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",

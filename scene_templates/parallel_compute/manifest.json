@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "purpose": "Two explicit computations shown side by side",
+  "required_props": ["eyebrow", "title", "badge", "left_head", "right_head", "rows", "op", "result"]
+}

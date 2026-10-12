@@ -19,6 +19,7 @@ from app.config import settings
 from app.core.errors import RetryableError, TerminalError
 from app.core.logging import get_logger
 from app.providers.base import SceneRenderResult, SceneRenderSpec
+from app.providers.renderer.scene_contract import payload_digest, validate_template_payload
 
 log = get_logger("renderer.playwright")
 
@@ -81,7 +82,13 @@ class PlaywrightStillsRenderer:
             raise TerminalError("Renderer not started; use `async with` or call start()")
 
         template = self.template_path(spec.template_id)
-        out_dir.mkdir(parents=True, exist_ok=True)
+        validate_template_payload(template.parent, spec.props)
+        scene_dir = (
+            out_dir
+            / spec.script_id
+            / f"scene_{spec.scene_number:02d}_{spec.scene_id}"
+        )
+        scene_dir.mkdir(parents=True, exist_ok=True)
 
         page = await self._browser.new_page(
             viewport={"width": spec.width, "height": spec.height},
@@ -91,7 +98,16 @@ class PlaywrightStillsRenderer:
         try:
             # Props are injected before any script runs, so the template never
             # renders a flash of demo content.
-            await page.add_init_script(f"window.__PROPS__ = {json.dumps(spec.props)};")
+            context = {
+                "project_id": spec.project_id,
+                "script_id": spec.script_id,
+                "scene_id": spec.scene_id,
+                "payload_sha256": payload_digest(spec),
+            }
+            await page.add_init_script(
+                f"window.__PROPS__ = {json.dumps(spec.props)};"
+                f"window.__RENDER_CONTEXT__ = {json.dumps(context)};"
+            )
             await page.goto(template.as_uri(), wait_until="load")
 
             # Wait for fonts. Screenshotting early captures fallback metrics and
@@ -100,7 +116,7 @@ class PlaywrightStillsRenderer:
 
             for index, t in enumerate(spec.keyframes):
                 await page.evaluate("(t) => window.seek(t)", t)
-                frame_path = out_dir / f"scene_{spec.scene_number:02d}_k{index}.png"
+                frame_path = scene_dir / f"k_{index:02d}.png"
                 await page.screenshot(path=str(frame_path), type="png")
                 frames.append(frame_path)
 
@@ -117,6 +133,10 @@ class PlaywrightStillsRenderer:
             "renderer.scene_rendered",
             scene=spec.scene_number,
             template=spec.template_id,
+            project_id=spec.project_id,
+            script_id=spec.script_id,
+            scene_id=spec.scene_id,
+            payload_sha256=payload_digest(spec),
             frames=len(frames),
         )
         return SceneRenderResult(

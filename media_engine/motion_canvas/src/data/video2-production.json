@@ -1,0 +1,15 @@
+{
+  "project_id": "01a11afb-aa75-7306-b2a2-e5e7af87b988",
+  "script_id": "01a12eae-17b5-7d77-b0b9-1a6002a9af06",
+  "script_version": 3,
+  "audio_duration_seconds": 31.781,
+  "total_duration_seconds": 33.0,
+  "ending": {"concept_hold": 0.14, "diagram_transition": 0.24, "card_transition": 0.24},
+  "scenes": [
+    {"number": 1, "start": 0.0, "duration": 4.11, "speech_duration": 3.99, "events": {"password": 0.98, "readable": 1.76, "verifier": 3.18}},
+    {"number": 2, "start": 4.11, "duration": 6.067, "speech_duration": 5.947, "events": {"password": 0.48, "salt": 1.86, "hash": 4.22, "verifier": 5.52}},
+    {"number": 3, "start": 10.177, "duration": 8.72, "speech_duration": 8.6, "events": {"password": 1.1, "salts": 2.26, "results": 2.8, "login": 4.48, "compare": 6.6, "match": 7.72}},
+    {"number": 4, "start": 18.897, "duration": 8.661, "speech_duration": 8.541, "events": {"breach": 0.3, "not_reversible": 2.1, "guessing": 3.32, "argon2id": 6.0, "cost": 7.28}},
+    {"number": 5, "start": 27.558, "duration": 5.442, "speech_duration": 3.223, "events": {"password": 0.0, "database": 1.64, "verifier": 2.54}}
+  ]
+}

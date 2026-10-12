@@ -341,6 +341,45 @@ export interface LearningRecord {
   performance: Record<"D1" | "D3" | "D7" | "D28" | "D90", AuthoritativeWindow | null>;
 }
 
+export interface ExperimentProject {
+  id: string;
+  topic: string;
+  status: string;
+  working_title: string | null;
+}
+
+export interface ContentExperiment {
+  id: string;
+  project_id: string;
+  experiment_version: number;
+  status: string;
+  hypothesis: string;
+  primary_variable: string;
+  planned: Record<string, string | number | null>;
+  control_reference: ExperimentProject | null;
+  locked_at: string | null;
+  locked_snapshot: Record<string, unknown>;
+  project: ExperimentProject | null;
+  published_video?: { id: string; youtube_video_id: string } | null;
+  window_status?: Record<"D1" | "D3" | "D7" | "D28" | "D90", string | null>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ExperimentList {
+  items: ContentExperiment[];
+  total: number;
+  evidence: {
+    number_of_published_experiments: number;
+    complete_d1_samples: number;
+    complete_d3_samples: number;
+    complete_d7_samples: number;
+    complete_d28_samples: number;
+    complete_d90_samples: number;
+  };
+  observational_only: true;
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -470,4 +509,23 @@ export const api = {
       `/api/v1/content-intelligence/videos/${publishedVideoId}/refresh`,
       { method: "POST" },
     ),
+  experiments: () => request<ExperimentList>("/api/v1/experiments"),
+  createExperiment: (body: Record<string, unknown>) =>
+    request<ContentExperiment>("/api/v1/experiments", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  updateExperiment: (id: string, body: Record<string, unknown>) =>
+    request<ContentExperiment>(`/api/v1/experiments/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  planExperiment: (id: string) =>
+    request<ContentExperiment>(`/api/v1/experiments/${id}/plan`, { method: "POST" }),
+  launchExperiment: (id: string) =>
+    request<Record<string, unknown>>(`/api/v1/experiments/${id}/launch`, { method: "POST" }),
+  experimentComparison: (id: string) =>
+    request<Record<string, unknown>>(`/api/v1/experiments/${id}/comparison`),
+  experimentOutcome: (id: string) =>
+    request<Record<string, unknown>>(`/api/v1/experiments/${id}/outcome`),
 };

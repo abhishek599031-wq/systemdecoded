@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "purpose": "TOTP code and countdown reveal",
+  "required_props": ["eyebrow", "code", "headline", "seconds_start", "seconds_end"]
+}

@@ -4,7 +4,7 @@
 
 An autonomous YouTube content operations system for a technology edutainment channel.
 
-**Current status: Phase 4 — Content Intelligence and learning-data foundation.**
+**Current status: Phase 5 — Controlled experimentation and baseline expansion.**
 The system produces a finished, review-ready YouTube Short end to end: script →
 local TTS narration → timings measured from that audio → word-aligned captions →
 scene visuals rendered from HTML templates → FFmpeg composition → automated quality
@@ -41,6 +41,7 @@ Next.js studio, and YouTube OAuth with encrypted tokens.
 - [YouTube integration](#youtube-integration)
 - [YouTube analytics](#youtube-analytics)
 - [Content Intelligence](#content-intelligence)
+- [Controlled experiments](#controlled-experiments)
 - [Troubleshooting](#troubleshooting)
 - [Known limitations](#known-limitations)
 - [Documentation](#documentation)
@@ -686,9 +687,21 @@ Coverage of the foundation:
 | Content Intelligence operational UI | ✅ |
 | Recommendations, rankings, autonomous strategy | intentionally deferred |
 
+### Phase 5 — Controlled experimentation and baseline expansion ✅
+
+| Item | Status |
+|---|---|
+| One primary `ContentExperiment` per project | ✅ |
+| Locked planned intent and lifecycle state machine | ✅ |
+| Planned-versus-actual descriptive comparison | ✅ |
+| Published-video and D1/D3/D7/D28/D90 outcome joins | ✅ |
+| Evidence counts and reference-video availability | ✅ |
+| Experiments register and human-controlled launch UI | ✅ |
+| Autonomous publishing, ranking, causal claims, and recommendations | intentionally deferred |
+
 ### Not built yet — and honestly labelled in the UI
 
-LLM-assisted script generation · autonomous planner · experiments · insights.
+LLM-assisted script generation · autonomous planner · insights.
 
 ---
 
@@ -868,6 +881,20 @@ Learning records join the feature profile to stored fixed-window results. Filter
 descriptive grouping expose `videos_in_group` and `complete_windows_available`; they do
 not rank strategies, recommend content, claim causation, or generalize from the current
 single-video sample. Those interpretation and decision layers are deferred to Phase 5.
+
+## Controlled experiments
+
+Phase 5 adds a human-authored `ContentExperiment` as the explicit statement of
+planned intent before production. A project can have only one primary experiment.
+The plan is editable while DRAFT and becomes immutable when marked PLANNED. The
+existing production queue, approval gates, quota preflight, QC, publication
+reconciliation, and analytics ingestion advance its lifecycle; no OAuth or upload
+scope changes are involved.
+
+The Experiments page exposes the register, evidence counts, a planned-versus-actual
+comparison, and fixed lifecycle outcomes. It is observational: it does not rank
+creative choices, pick a winner, infer causation, or recommend a strategy. See
+[ADR 0005](docs/adr/0005-content-experiments.md) for the schema and join contract.
 
 ---
 

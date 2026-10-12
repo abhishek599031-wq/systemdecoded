@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "project_id": "01a11afb-aa75-7306-b2a2-e5e7af87b988",
+  "script_id": "01a11b7b-b741-76a0-ad30-ffe7096e0c2b",
+  "script_version": 2,
+  "scene_id": "01a11b7b-b750-7785-957b-a741958b4e30",
+  "scene_number": 2,
+  "narration": "A salted password hash. A unique salt makes the stored result different for each account.",
+  "on_screen_text": "password + unique salt → slow hash",
+  "visual_instruction": "Two accounts using the same password enter separate salted hashing paths and produce different outputs.",
+  "persisted_template_id": "parallel_compute",
+  "persisted_template_props": {
+    "title": "password + unique salt → slow hash",
+    "eyebrow": "The stored verifier"
+  },
+  "renderer": "motion-canvas-poc",
+  "timing": {
+    "source": "canonical-caption-word-timing",
+    "audio_duration_seconds": 4.24,
+    "events": [
+      {"id": "salted_hash", "phrase": "salted password hash", "start": 0.14, "end": 0.92},
+      {"id": "same_password", "phrase": "password", "start": 0.42, "end": 0.7},
+      {"id": "unique_salt", "phrase": "unique salt", "start": 1.6, "end": 2.08},
+      {"id": "different_outputs", "phrase": "different", "start": 2.88, "end": 3.22},
+      {"id": "each_account", "phrase": "each account", "start": 3.48, "end": 3.92}
+    ]
+  },
+  "render_payload": {
+    "example_password": "correct-horse",
+    "accounts": [
+      {"label": "ACCOUNT A", "salt": "A7C2…19", "verifier": "$argon2id$A9…3F"},
+      {"label": "ACCOUNT B", "salt": "F4E1…82", "verifier": "$argon2id$7D…C1"}
+    ],
+    "function_label": "slow password hash",
+    "result_label": "DIFFERENT STORED VERIFIERS"
+  }
+}

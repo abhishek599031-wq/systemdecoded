@@ -26,7 +26,7 @@ from app.integrations.youtube.errors import (
 from app.models.channel import Channel
 from app.models.content import ContentProject, PublishedVideo
 from app.models.enums import ConnectionStatus, ProjectStatus
-from app.services import publishing, youtube_connection
+from app.services import experiments, publishing, youtube_connection
 
 YOUTUBE_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 RECONCILIATION_METHOD = "manual_confirmation_verified"
@@ -138,4 +138,5 @@ async def reconcile_manual_publication(
             actor="HUMAN",
             reason=f"Verified manual YouTube upload {video_id}",
         )
+    await experiments.mark_published(session, locked_project.id)
     return published
