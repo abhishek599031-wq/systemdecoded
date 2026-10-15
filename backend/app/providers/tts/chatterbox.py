@@ -26,6 +26,61 @@ from app.providers.base import AudioResult, VoiceSpec
 log = get_logger("tts.chatterbox")
 
 
+def _exception_chain(exc: BaseException):
+    """Yield an exception and its explicit/implicit causes once each."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = current.__cause__ or current.__context__
+
+
+def _is_transient_model_load_error(exc: BaseException) -> bool:
+    """Only network/download failures are safe model-initialization retries."""
+    for cause in _exception_chain(exc):
+        if isinstance(cause, (ConnectionError, TimeoutError)):
+            return True
+        module = type(cause).__module__
+        name = type(cause).__name__
+        if module.startswith(("httpx", "httpcore", "requests", "urllib3")) and any(
+            marker in name for marker in ("Connection", "Timeout", "Transport")
+        ):
+            return True
+        response = getattr(cause, "response", None)
+        status = getattr(response, "status_code", None)
+        if status == 429 or (isinstance(status, int) and status >= 500):
+            return True
+    return False
+
+
+def _require_real_perth_watermarker() -> None:
+    """Fail loudly when Perth hid an implementation import error.
+
+    resemble-perth 1.0.1 catches ImportError and exports None. Importing the
+    implementation directly recovers the original exception for the chained
+    traceback instead of letting Chatterbox fail later with an opaque TypeError.
+    """
+    try:
+        import perth
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise TerminalError("Perth audio watermarking is not installed") from exc
+
+    if callable(getattr(perth, "PerthImplicitWatermarker", None)):
+        return
+
+    try:
+        from perth.perth_net.perth_net_implicit.perth_watermarker import (  # noqa: F401
+            PerthImplicitWatermarker,
+        )
+    except Exception as exc:
+        raise TerminalError(
+            "PerthImplicitWatermarker is unavailable because its implementation "
+            f"failed to import ({type(exc).__name__}: {exc})"
+        ) from exc
+    raise TerminalError("PerthImplicitWatermarker is installed but is not callable")
+
+
 def _install_windows_sklearn_import_shim() -> str | None:
     """Avoid a blocked, unused sklearn binary dependency on this Windows host."""
     if os.name != "nt":
@@ -77,6 +132,8 @@ class ChatterboxOriginalTTS:
             def _load():
                 workaround = _install_windows_sklearn_import_shim()
                 import torch
+
+                _require_real_perth_watermarker()
                 from chatterbox.tts import ChatterboxTTS as Model
 
                 if self.device == "cuda" and not torch.cuda.is_available():
@@ -90,13 +147,37 @@ class ChatterboxOriginalTTS:
             try:
                 loaded, seconds, workaround = await asyncio.to_thread(_load)
             except TerminalError:
+                log.exception(
+                    "tts.model_initialization_terminal",
+                    provider=self.name,
+                    model=self.model,
+                    device=self.device,
+                )
                 raise
             except (ImportError, ModuleNotFoundError) as exc:
+                log.exception(
+                    "tts.model_dependency_missing",
+                    provider=self.name,
+                    model=self.model,
+                    device=self.device,
+                    error_type=type(exc).__name__,
+                )
                 raise TerminalError(
                     "Original Chatterbox is not installed. Install chatterbox-tts."
                 ) from exc
             except Exception as exc:
-                raise RetryableError(f"Original Chatterbox model load failed: {exc}") from exc
+                log.exception(
+                    "tts.model_initialization_failed",
+                    provider=self.name,
+                    model=self.model,
+                    device=self.device,
+                    error_type=type(exc).__name__,
+                    retryable=_is_transient_model_load_error(exc),
+                )
+                error = f"Original Chatterbox model load failed: {type(exc).__name__}: {exc}"
+                if _is_transient_model_load_error(exc):
+                    raise RetryableError(error) from exc
+                raise TerminalError(error) from exc
             self._models[key] = loaded
             self._load_seconds[key] = seconds
             if workaround:

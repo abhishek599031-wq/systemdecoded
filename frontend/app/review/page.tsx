@@ -76,6 +76,8 @@ export default function ReviewPage() {
   }
 
   const q = detail.quality;
+  const captionAssets = detail.assets.filter((asset) => asset.asset_type === "CAPTION_FILE");
+  const sceneAssets = detail.assets.filter((asset) => asset.asset_type === "SCENE_FRAME");
 
   return (
     <div className="space-y-6">
@@ -110,6 +112,14 @@ export default function ReviewPage() {
           }`}
         >
           {message.text}
+        </div>
+      )}
+
+      {detail.render && !detail.render.current_script_match && (
+        <div className="rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-warn">
+          This is the historical render for script v{detail.render.script_version ?? "unknown"}.
+          The current approved script is v{detail.script?.version ?? "unknown"} and still requires
+          a new production attempt.
         </div>
       )}
 
@@ -170,6 +180,7 @@ export default function ReviewPage() {
           {detail.render && (
             <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
               <Field label="Resolution" value={`${detail.render.width}×${detail.render.height}`} />
+              <Field label="Rendered script" value={`v${detail.render.script_version ?? "—"}`} />
               <Field
                 label="Duration"
                 value={
@@ -273,6 +284,35 @@ export default function ReviewPage() {
 
         {/* ------------------------------------------------------ details --- */}
         <div className="space-y-6">
+          {(detail.production_job || detail.failure_reason) && (
+            <Section title="Production status">
+              {detail.production_job && (
+                <div className="space-y-1 text-sm">
+                  <Row label="Job" value={detail.production_job.id} />
+                  <Row label="Status" value={detail.production_job.status} />
+                  <Row
+                    label="Script revision"
+                    value={`v${detail.production_job.script_version ?? "unknown"} (${detail.production_job.current_script_match ? "current" : "historical"})`}
+                  />
+                  <Row
+                    label="Attempts"
+                    value={`${detail.production_job.attempt}/${detail.production_job.max_attempts}`}
+                  />
+                  {detail.production_job.error_message && (
+                    <p className="mt-3 rounded bg-bad/10 p-3 text-bad">
+                      {detail.production_job.error_message}
+                    </p>
+                  )}
+                </div>
+              )}
+              {detail.failure_reason && (
+                <p className="mt-3 rounded bg-bad/10 p-3 text-sm text-bad">
+                  {detail.failure_reason}
+                </p>
+              )}
+            </Section>
+          )}
+
           {q && (
             <Section title={`Quality checks — ${q.verdict}`}>
               <ul className="space-y-1 text-sm">
@@ -289,6 +329,27 @@ export default function ReviewPage() {
               </ul>
             </Section>
           )}
+
+          <Section title={`Render history (${detail.render_history.length})`}>
+            <div className="space-y-2">
+              {detail.render_history.map((item) => (
+                <div key={item.id} className="rounded-md border border-ink-800 p-3 text-sm">
+                  <div className="flex flex-wrap justify-between gap-2">
+                    <span>Script v{item.script_version ?? "unknown"}</span>
+                    <span className={item.is_current_script ? "text-good" : "text-ink-500"}>
+                      {item.is_current_script ? "current script" : "historical script"}
+                    </span>
+                  </div>
+                  <div className="mt-1 text-xs text-ink-500">
+                    {item.status} · QC {item.quality_verdict ?? "not recorded"} · review {item.review_state ?? "not recorded"} · {item.filename ?? item.id}
+                  </div>
+                </div>
+              ))}
+              {detail.render_history.length === 0 && (
+                <p className="text-sm text-ink-500">No render attempts yet.</p>
+              )}
+            </div>
+          </Section>
 
           {detail.script && (
             <Section title="Script">
@@ -321,6 +382,18 @@ export default function ReviewPage() {
               ))}
             </div>
           </Section>
+
+          {detail.render && (
+            <Section title="Render artifacts">
+              <div className="space-y-2 text-sm">
+                <Row label="Scene renders" value={`${sceneAssets.length}/${detail.scenes.length}`} />
+                <Row
+                  label="Captions"
+                  value={captionAssets.length > 0 ? `${captionAssets.length} timed caption file` : "missing"}
+                />
+              </div>
+            </Section>
+          )}
 
           <Section title={`Factual sources (${detail.research.length} claims)`}>
             <ul className="space-y-2 text-sm">

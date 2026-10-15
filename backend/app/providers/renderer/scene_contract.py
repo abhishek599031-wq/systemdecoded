@@ -23,6 +23,7 @@ def build_scene_spec(
     *,
     width: int,
     height: int,
+    runtime_props: dict[str, Any] | None = None,
 ) -> SceneRenderSpec:
     """Create a render spec only when the full ownership chain is consistent."""
     if script.project_id != project.id:
@@ -39,6 +40,11 @@ def build_scene_spec(
     # Round-trip through JSON to detach the renderer payload from SQLAlchemy's
     # mutable JSON value.  Providers receive a snapshot, not a live model dict.
     props = json.loads(json.dumps(scene.template_props, ensure_ascii=False))
+    if runtime_props:
+        # Runtime values are derived from measured narration/canonical caption
+        # timing. They enrich the immutable creative payload but are never
+        # written back into the persisted SceneSpec.
+        props.update(json.loads(json.dumps(runtime_props, ensure_ascii=False)))
     return SceneRenderSpec(
         project_id=str(project.id),
         script_id=str(script.id),

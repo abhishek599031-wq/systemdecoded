@@ -176,8 +176,13 @@ class Settings(BaseSettings):
     FAST_UTILITY_MODEL: str = "qwen3.5:4b"
     FALLBACK_MODEL: str = "qwen3.5:9b"
     LLM_CONTEXT_LIMIT: int = Field(default=8192, ge=1024, le=16384)
-    LLM_TIMEOUT: float = Field(default=120.0, gt=0.0, le=600.0)
-    LLM_MAX_ATTEMPTS: int = Field(default=2, ge=1, le=3)
+    # Structured planner prompts can take over two minutes on a cold local GPU.
+    # Keep this aligned with the evaluated configuration rather than failing
+    # over to another large model halfway through a valid response.
+    LLM_TIMEOUT: float = Field(default=240.0, gt=0.0, le=600.0)
+    # One initial structured response plus at most two validation-informed
+    # repairs. Each repair includes the exact latest Pydantic errors.
+    LLM_MAX_ATTEMPTS: int = Field(default=3, ge=1, le=3)
     # Unload after a response by default. This prevents an idle LLM from
     # competing with Chatterbox on an 8 GB GPU; benchmark tooling can override
     # it for a warm-run measurement.

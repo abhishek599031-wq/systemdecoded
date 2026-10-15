@@ -88,3 +88,32 @@ def test_render_payload_is_a_detached_snapshot() -> None:
     spec = _spec("flow", source)
     source["nodes"][0]["value"] = "mutated after construction"
     assert spec.props["nodes"][0]["value"] == "salt A"
+
+
+def test_runtime_timing_is_merged_without_mutating_persisted_props() -> None:
+    project_id, script_id, scene_id = _ids()
+    source = {"schema_version": 1, "visual_type": "FLOW", "labels": ["DNS"]}
+    runtime = {"duration_seconds": 3.25, "timing": {"events": []}}
+    project = SimpleNamespace(id=project_id, current_script_id=script_id)
+    script = SimpleNamespace(id=script_id, project_id=project_id)
+    scene = SimpleNamespace(
+        id=scene_id,
+        script_id=script_id,
+        scene_number=1,
+        template_id="generic_scene_spec",
+        template_props=source,
+    )
+
+    spec = build_scene_spec(
+        project,
+        script,
+        scene,
+        width=1080,
+        height=1920,
+        runtime_props=runtime,
+    )
+    runtime["timing"]["events"].append({"start": 1})
+
+    assert spec.props["duration_seconds"] == 3.25
+    assert spec.props["timing"]["events"] == []
+    assert "duration_seconds" not in source

@@ -32,6 +32,9 @@ TRUNCATE_TABLES = (
     "youtube_video_window_metric",
     "youtube_video_daily_metric",
     "content_feature_profile",
+    # Phase 6A planner data must be cleared before its optional project link.
+    "content_proposal",
+    "planner_run",
     # Phase 2. Ordered child-first, though CASCADE makes ordering moot.
     "quality_check",
     "production_asset",

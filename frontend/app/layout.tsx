@@ -6,10 +6,10 @@ export const metadata: Metadata = {
   description: "Complex Technology. Decoded. — autonomous content operations",
 };
 
-const NAV = [
+const NAV: { label: string; href: string; active: boolean; phase?: number }[] = [
   { label: "Dashboard", href: "/", active: true },
   { label: "Review", href: "/review", active: true },
-  { label: "Ideas", href: "#", active: false, phase: 4 },
+  { label: "Ideas", href: "/planner", active: true },
   { label: "Analytics", href: "/analytics", active: true },
   { label: "Content Intelligence", href: "/content-intelligence", active: true },
   { label: "Experiments", href: "/experiments", active: true },
@@ -49,7 +49,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 )}
               </nav>
               <div className="ml-auto rounded-full border border-ink-700 px-3 py-1 text-xs text-ink-300">
-                Phase 5 — Experiments
+                Phase 6A — Planning
               </div>
             </div>
           </header>

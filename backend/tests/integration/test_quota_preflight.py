@@ -401,7 +401,10 @@ async def test_blocked_job_leaves_the_project_ready_not_failed(
             self.session = session
             self.job_id = None
             self.logger = __import__("app.core.logging", fromlist=["get_logger"]).get_logger("t")
-            self.payload = {"project_id": project.id}
+            self.payload = {
+                "project_id": project.id,
+                "script_id": project.current_script_id,
+            }
 
         def require(self, key):
             return self.payload[key]

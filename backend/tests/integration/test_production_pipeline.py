@@ -1,6 +1,6 @@
 """Production pipeline against the database, and one genuine end-to-end render.
 
-The media test is marked and skipped when FFmpeg/Chromium/Kokoro are absent, so
+The media test is marked and skipped when FFmpeg/Chromium/current TTS are absent, so
 `pytest` still works in the slim API image. Run the full set inside the worker
 container, which is the only image carrying the media stack:
 
@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
+from app.config import settings
 from app.core.errors import InvalidStateTransition
 from app.core.state_machine import transition
 from app.models.content import (
@@ -48,12 +49,19 @@ def media_stack_available() -> bool:
         return False
     import importlib.util as u
 
-    return all(u.find_spec(m) for m in ("kokoro_onnx", "faster_whisper", "playwright"))
+    provider_module = {
+        "chatterbox": "chatterbox",
+        "chatterbox-turbo": "chatterbox",
+        "kokoro": "kokoro_onnx",
+    }.get(settings.TTS_PROVIDER)
+    return bool(provider_module) and all(
+        u.find_spec(module) for module in (provider_module, "faster_whisper", "playwright")
+    )
 
 
 requires_media = pytest.mark.skipif(
     not media_stack_available(),
-    reason="FFmpeg/Chromium/Kokoro not present; run inside the worker container",
+    reason="FFmpeg/Chromium/current TTS not present; run inside the worker container",
 )
 
 

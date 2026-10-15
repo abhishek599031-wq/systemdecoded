@@ -134,6 +134,7 @@ export interface ProjectDetail extends ProjectSummary {
     description: string | null;
     hashtags: string[];
     word_count: number | null;
+    estimated_duration_seconds: number | null;
     authoring_mode: string;
   } | null;
   scenes: {
@@ -142,6 +143,7 @@ export interface ProjectDetail extends ProjectSummary {
     on_screen_text: string | null;
     visual_instruction: string | null;
     template_id: string;
+    template_props: Record<string, unknown>;
     start_seconds: number | null;
     end_seconds: number | null;
     duration_seconds: number | null;
@@ -155,6 +157,9 @@ export interface ProjectDetail extends ProjectSummary {
   }[];
   render: {
     id: string;
+    script_id: string;
+    script_version: number | null;
+    current_script_match: boolean;
     status: string;
     filename: string | null;
     width: number | null;
@@ -166,13 +171,61 @@ export interface ProjectDetail extends ProjectSummary {
     peak_dbfs: number | null;
     error_message: string | null;
   } | null;
+  render_history: {
+    id: string;
+    script_id: string;
+    script_version: number | null;
+    status: string;
+    filename: string | null;
+    created_at: string;
+    quality_verdict: string | null;
+    review_state: string | null;
+    is_project_current: boolean;
+    is_current_script: boolean;
+  }[];
+  production: {
+    current_script_id: string | null;
+    current_script_version: number | null;
+    latest_rendered_script_id: string | null;
+    latest_rendered_script_version: number | null;
+    latest_production_job_status: string | null;
+    current_script_rendered: boolean;
+    production_required: boolean;
+    can_start_production: boolean;
+    action_label: string | null;
+    active_job_id: string | null;
+    active_job_status: string | null;
+    latest_render_qc: string | null;
+    latest_render_review_state: string | null;
+  };
   quality: {
     verdict: string;
     checks: QualityCheckItem[];
     blocking_issues: string[];
     warnings: string[];
   } | null;
-  assets: { asset_type: string; origin: string; license: string; provider: string | null }[];
+  assets: {
+    asset_type: string;
+    origin: string;
+    license: string;
+    provider: string | null;
+    file_path: string;
+    bytes: number | null;
+  }[];
+  production_job: {
+    id: string;
+    script_id: string | null;
+    script_version: number | null;
+    current_script_match: boolean;
+    status: string;
+    attempt: number;
+    max_attempts: number;
+    error_class: string | null;
+    error_message: string | null;
+    created_at: string;
+    started_at: string | null;
+    finished_at: string | null;
+  } | null;
   publishing: {
     mode: string;
     state: string;
@@ -375,6 +428,44 @@ export interface ContentExperiment {
   updated_at: string;
 }
 
+export interface PlannerProposal {
+  id: string;
+  rank: number;
+  state: string;
+  selected: boolean;
+  ai_selected: boolean;
+  topic: string;
+  pillar: string;
+  hook: string;
+  rationale: string;
+  novelty: string;
+  research_feasibility: string;
+  visual_feasibility: string;
+  hypothesis: string;
+  primary_variable: string;
+  evidence_limitations: string;
+  rejection_reason: string | null;
+  scoring: Record<string, unknown>;
+  project_id: string | null;
+}
+
+export interface PlannerRun {
+  id: string;
+  trigger: string;
+  status: "PENDING" | "RUNNING" | "READY_FOR_REVIEW" | "FAILED";
+  provider: string | null;
+  model: string | null;
+  planner_version: string;
+  context: Record<string, unknown>;
+  decision_summary: string | null;
+  error: string | null;
+  previous_error: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  proposals: PlannerProposal[];
+  job_id?: string;
+}
+
 export interface ExperimentList {
   items: ContentExperiment[];
   total: number;
@@ -447,6 +538,16 @@ export const api = {
   cancel: (id: string) =>
     request<JobSummary>(`/api/v1/jobs/${id}/cancel`, { method: "POST" }),
 
+  plannerRuns: () => request<{ items: PlannerRun[] }>("/api/v1/planner/runs"),
+  plannerRun: (id: string) => request<PlannerRun>(`/api/v1/planner/runs/${id}`),
+  startPlanner: () => request<PlannerRun>("/api/v1/planner/runs", { method: "POST" }),
+  resumePlanner: (id: string) =>
+    request<PlannerRun>(`/api/v1/planner/runs/${id}/resume`, { method: "POST" }),
+  selectPlannerProposal: (runId: string, proposalId: string) =>
+    request<PlannerRun>(`/api/v1/planner/runs/${runId}/proposals/${proposalId}/select`, {
+      method: "POST",
+    }),
+
   projects: () => request<{ items: ProjectSummary[]; total: number }>("/api/v1/projects"),
   project: (id: string) => request<ProjectDetail>(`/api/v1/projects/${id}`),
   // renderId busts the browser's HTTP cache: without it, re-rendering a
@@ -457,6 +558,13 @@ export const api = {
     `${API_URL}/api/v1/projects/${id}/video${renderId ? `?r=${renderId}` : ""}`,
   produce: (id: string) =>
     request<Record<string, unknown>>(`/api/v1/projects/${id}/produce`, { method: "POST" }),
+  approveScript: (id: string) =>
+    request<{ status: string }>(`/api/v1/projects/${id}/approve-script`, { method: "POST" }),
+  reviewScript: (id: string, decision: "revise" | "reject", notes?: string) =>
+    request<{ status: string }>(`/api/v1/projects/${id}/review-script`, {
+      method: "POST",
+      body: JSON.stringify({ decision, notes }),
+    }),
   review: (id: string, decision: "approve" | "revise" | "reject", notes?: string) =>
     request<Record<string, unknown>>(`/api/v1/projects/${id}/review`, {
       method: "POST",

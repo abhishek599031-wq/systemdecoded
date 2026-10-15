@@ -12,13 +12,14 @@ reason, rather than quietly producing a broken video.
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from app.core.errors import RetryableError, TerminalError
 from app.core.state_machine import transition
 from app.jobs.context import JobContext
 from app.jobs.registry import job
-from app.models.content import ContentProject, VideoRender
+from app.models.content import ContentProject, Script, VideoRender
 from app.models.enums import ProjectStatus, QualityVerdict
 from app.services import experiments, production, publishing, quality
 
@@ -35,10 +36,22 @@ PRODUCTION_RETRYABLE = (RetryableError,)
 )
 async def produce_video(ctx: JobContext) -> dict[str, Any]:
     project_id = ctx.require("project_id")
+    script_id = ctx.require("script_id")
     project = await ctx.session.get(ContentProject, project_id)
     if project is None:
         raise TerminalError(f"Project {project_id} not found")
-
+    try:
+        intended_script_id = uuid.UUID(str(script_id))
+    except ValueError as exc:
+        raise TerminalError(f"Invalid production script id: {script_id}") from exc
+    script = await ctx.session.get(Script, intended_script_id)
+    if script is None or script.project_id != project.id:
+        raise TerminalError(f"Script {script_id} does not belong to project {project_id}")
+    if project.current_script_id != script.id or not script.is_current:
+        raise TerminalError(
+            f"Production job targets stale script v{script.version}; "
+            "the approved current revision changed before execution."
+        )
     ctx.logger.info("content.production_started", topic=project.topic, status=project.status)
 
     if project.status not in {
@@ -58,7 +71,6 @@ async def produce_video(ctx: JobContext) -> dict[str, Any]:
     # to try again once quota returns. Marking it FAILED would be wrong — the
     # project is fine, the allowance is not — and moving it to RENDERING first
     # would require unwinding a state change for a render that never began.
-    script = await production.current_script(ctx.session, project)
     plan, decision = await production.plan_and_preflight(ctx.session, script)
     if not decision.allowed:
         detail = {**decision.as_detail(), "voice": plan.voice}
@@ -83,7 +95,7 @@ async def produce_video(ctx: JobContext) -> dict[str, Any]:
                          reason="Production run started", job_id=ctx.job_id)
 
     try:
-        render = await production.produce(ctx.session, project)
+        render = await production.produce(ctx.session, project, script=script)
     except Exception as exc:
         # Roll back partial work, then record the failure against the project so
         # it surfaces in the UI instead of vanishing into job logs.
@@ -129,6 +141,8 @@ async def produce_video(ctx: JobContext) -> dict[str, Any]:
         "warnings": list(check.warnings),
         "duration_seconds": float(render.duration_seconds) if render.duration_seconds else None,
         "output": render.output_path,
+        "script_id": str(script.id),
+        "script_version": script.version,
         "advanced_to_review": True,
     }
 

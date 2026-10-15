@@ -21,8 +21,8 @@ x-backend-env: &backend-env
   LOG_FORMAT: ${LOG_FORMAT:-console}
   MEDIA_ROOT: /media
   SCENE_TEMPLATES_DIR: /scene_templates
-  TTS_PROVIDER: ${TTS_PROVIDER:-gemini}
-  TTS_FALLBACK_PROVIDER: ${TTS_FALLBACK_PROVIDER:-kokoro}
+  TTS_PROVIDER: ${TTS_PROVIDER:-chatterbox}
+  TTS_FALLBACK_PROVIDER: ${TTS_FALLBACK_PROVIDER:-none}
   # Substitution only — the value lives in .env, never in this file.
   GEMINI_API_KEY: ${GEMINI_API_KEY:-}
   GEMINI_TTS_MODEL: ${GEMINI_TTS_MODEL:-gemini-3.1-flash-tts-preview}
@@ -64,7 +64,7 @@ x-backend-env: &backend-env
   FALLBACK_MODEL: ${FALLBACK_MODEL:-qwen3.5:9b}
   LLM_CONTEXT_LIMIT: ${LLM_CONTEXT_LIMIT:-8192}
   LLM_TIMEOUT: ${LLM_TIMEOUT:-120}
-  LLM_MAX_ATTEMPTS: ${LLM_MAX_ATTEMPTS:-2}
+  LLM_MAX_ATTEMPTS: ${LLM_MAX_ATTEMPTS:-3}
   OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-0s}
   CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
 
@@ -144,6 +144,9 @@ services:
       WORKER_ID: ${WORKER_ID:-worker-1}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
       WORKER_JOB_TYPES: ${WORKER_JOB_TYPES:-}
+      HF_HOME: /media/cache/models/huggingface
+      TORCH_HOME: /media/cache/models/torch
+    gpus: all
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f 'app.jobs.worker' > /dev/null || exit 1"]
       interval: 30s

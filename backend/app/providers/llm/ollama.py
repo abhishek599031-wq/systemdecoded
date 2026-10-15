@@ -7,6 +7,7 @@ whether the local runtime exposes ``/api/generate`` or another compatible API.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import httpx
@@ -23,8 +24,15 @@ log = get_logger("llm.ollama")
 class StructuredOutputError(TerminalError):
     """The model did not produce data that the requested schema accepts."""
 
-    def __init__(self, message: str, *, raw_responses: list[str]) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        raw_responses: list[str],
+        validation_errors: list[dict[str, Any]],
+    ) -> None:
         self.raw_responses = raw_responses
+        self.validation_errors = validation_errors
         super().__init__(message)
 
 
@@ -147,8 +155,9 @@ class OllamaLLM:
         system: str | None = None,
         model: str | None = None,
     ) -> StructuredLLMResult[TStructured]:
-        """Generate strict JSON, validate it, and make at most one repair retry."""
+        """Generate strict JSON with a small, configured bound on informed repairs."""
         raw_responses: list[str] = []
+        validation_errors: list[dict[str, Any]] = []
         current_prompt = prompt
         schema_json = schema.model_json_schema()
         for attempt in range(1, self.max_attempts + 1):
@@ -162,6 +171,11 @@ class OllamaLLM:
             try:
                 value = schema.model_validate_json(result.text)
             except ValidationError as exc:
+                validation_errors = exc.errors(include_url=False, include_context=False)
+                readable = "; ".join(
+                    f"{'.'.join(str(part) for part in item['loc']) or 'response'}: {item['msg']}"
+                    for item in validation_errors
+                )
                 log.warning(
                     "llm.structured_validation_failed",
                     provider=self.name,
@@ -169,15 +183,21 @@ class OllamaLLM:
                     attempt=attempt,
                     of=self.max_attempts,
                     error_count=len(exc.errors()),
+                    validation_errors=validation_errors,
                 )
                 if attempt == self.max_attempts:
                     raise StructuredOutputError(
-                        f"Ollama did not satisfy {schema.__name__} after {attempt} attempts",
+                        f"Ollama did not satisfy {schema.__name__} after {attempt} attempts: "
+                        f"{readable}",
                         raw_responses=raw_responses,
+                        validation_errors=validation_errors,
                     ) from exc
                 current_prompt = (
-                    f"{prompt}\n\nYour previous response was invalid for the required JSON schema. "
-                    "Return only one valid JSON object; do not add markdown or explanation."
+                    f"{prompt}\n\nREPAIR REQUIRED. The previous JSON failed validation. "
+                    f"Validation errors: {json.dumps(validation_errors, ensure_ascii=False)}. "
+                    "Correct only those errors while preserving factual content. "
+                    "Return one complete JSON object matching the schema, with no markdown "
+                    "or explanation."
                 )
                 continue
             return StructuredLLMResult(value=value, raw=result, attempts=attempt)

@@ -33,8 +33,9 @@ from app.models.content import (
     VideoRender,
 )
 from app.models.enums import ProjectStatus
+from app.models.experiments import ContentExperiment
 from app.schemas.project import ManualPublicationConfirmation
-from app.services import experiments, publication_reconciliation, publishing
+from app.services import production_lifecycle, publication_reconciliation, publishing
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -110,6 +111,15 @@ async def get_project(
             ).scalars().all()
         )
 
+    scripts = list(
+        (
+            await db.execute(
+                select(Script).where(Script.project_id == project.id).order_by(Script.version)
+            )
+        ).scalars()
+    )
+    scripts_by_id = {row.id: row for row in scripts}
+
     notes = (
         await db.execute(select(ResearchNote).where(ResearchNote.project_id == project.id))
     ).scalars().all()
@@ -129,6 +139,29 @@ async def get_project(
                 )
             ).scalars().all()
         )
+
+    render_history = list(
+        (
+            await db.execute(
+                select(VideoRender)
+                .where(VideoRender.project_id == project.id)
+                .order_by(VideoRender.created_at.desc())
+            )
+        ).scalars()
+    )
+    render_ids = [row.id for row in render_history]
+    all_checks = list(
+        (
+            await db.execute(
+                select(QualityCheck)
+                .where(QualityCheck.render_id.in_(render_ids))
+                .order_by(QualityCheck.created_at.desc())
+            )
+        ).scalars()
+    ) if render_ids else []
+    latest_check_by_render: dict[uuid.UUID, QualityCheck] = {}
+    for check in all_checks:
+        latest_check_by_render.setdefault(check.render_id, check)
 
     assets = (
         await db.execute(
@@ -150,6 +183,37 @@ async def get_project(
     published = (
         await db.execute(select(PublishedVideo).where(PublishedVideo.project_id == project.id))
     ).scalars().first()
+    experiment = (
+        await db.execute(
+            select(ContentExperiment).where(ContentExperiment.project_id == project.id)
+        )
+    ).scalar_one_or_none()
+    production = await production_lifecycle.production_snapshot(
+        db, project, script, experiment
+    )
+    production_job = production["latest_revision_job"] or production["latest_job"]
+    production_job_script_id = (
+        production_lifecycle.job_script_id(production_job) if production_job else None
+    )
+    production_job_script = scripts_by_id.get(production_job_script_id)
+    latest_render = production["latest_render"]
+    latest_render_script = scripts_by_id.get(latest_render.script_id) if latest_render else None
+
+    def render_review_state(item: VideoRender) -> str | None:
+        review_transition = next(
+            (
+                row
+                for row in transitions
+                if row.created_at >= item.created_at
+                and row.from_status == ProjectStatus.VIDEO_REVIEW.value
+            ),
+            None,
+        )
+        if review_transition is not None:
+            return review_transition.to_status
+        if project.current_render_id == item.id:
+            return project.status
+        return None
 
     return {
         "id": str(project.id),
@@ -174,6 +238,11 @@ async def get_project(
                 "description": script.description,
                 "hashtags": list(script.hashtags or []),
                 "word_count": script.word_count,
+                "estimated_duration_seconds": (
+                    float(script.estimated_duration_seconds)
+                    if script.estimated_duration_seconds is not None
+                    else None
+                ),
                 "authoring_mode": script.authoring_mode,
             }
             if script
@@ -197,6 +266,11 @@ async def get_project(
         "render": (
             {
                 "id": str(render.id),
+                "script_id": str(render.script_id),
+                "script_version": scripts_by_id.get(render.script_id).version
+                if scripts_by_id.get(render.script_id)
+                else None,
+                "current_script_match": bool(script and render.script_id == script.id),
                 "status": render.status,
                 "output_path": render.output_path,
                 "filename": Path(render.output_path).name if render.output_path else None,
@@ -214,6 +288,48 @@ async def get_project(
             if render
             else None
         ),
+        "render_history": [
+            {
+                "id": str(item.id),
+                "script_id": str(item.script_id),
+                "script_version": scripts_by_id.get(item.script_id).version
+                if scripts_by_id.get(item.script_id)
+                else None,
+                "status": item.status,
+                "filename": Path(item.output_path).name if item.output_path else None,
+                "created_at": item.created_at.isoformat(),
+                "quality_verdict": latest_check_by_render[item.id].verdict
+                if item.id in latest_check_by_render
+                else None,
+                "review_state": render_review_state(item),
+                "is_project_current": project.current_render_id == item.id,
+                "is_current_script": bool(script and item.script_id == script.id),
+            }
+            for item in render_history
+        ],
+        "production": {
+            "current_script_id": production["current_script_id"],
+            "current_script_version": production["current_script_version"],
+            "latest_rendered_script_id": production["latest_rendered_script_id"],
+            "latest_rendered_script_version": latest_render_script.version
+            if latest_render_script
+            else None,
+            "latest_production_job_status": production["latest_job"].status
+            if production["latest_job"]
+            else None,
+            "current_script_rendered": production["current_script_rendered"],
+            "production_required": production["production_required"],
+            "can_start_production": production["can_start_production"],
+            "action_label": production["action_label"],
+            "active_job_id": production["active_job_id"],
+            "active_job_status": production["active_job_status"],
+            "latest_render_qc": latest_check_by_render[latest_render.id].verdict
+            if latest_render and latest_render.id in latest_check_by_render
+            else None,
+            "latest_render_review_state": render_review_state(latest_render)
+            if latest_render
+            else None,
+        },
         "quality": (
             {
                 "verdict": checks[0].verdict,
@@ -235,6 +351,38 @@ async def get_project(
             }
             for a in assets
         ],
+        "production_job": (
+            {
+                "id": str(production_job.id),
+                "script_id": str(production_job_script_id)
+                if production_job_script_id
+                else None,
+                "script_version": production_job_script.version
+                if production_job_script
+                else None,
+                "current_script_match": bool(
+                    script and production_job_script_id == script.id
+                ),
+                "status": production_job.status,
+                "attempt": production_job.attempt,
+                "max_attempts": production_job.max_attempts,
+                "error_class": production_job.error_class,
+                "error_message": production_job.error_message,
+                "created_at": production_job.created_at.isoformat(),
+                "started_at": (
+                    production_job.started_at.isoformat()
+                    if production_job.started_at
+                    else None
+                ),
+                "finished_at": (
+                    production_job.finished_at.isoformat()
+                    if production_job.finished_at
+                    else None
+                ),
+            }
+            if production_job
+            else None
+        ),
         "publishing": (
             publishing.package_as_dict(pub_job, render) if pub_job and render else None
         ),
@@ -307,30 +455,23 @@ async def get_video(
 async def produce(
     project_id: uuid.UUID, db: Annotated[AsyncSession, Depends(get_db)]
 ) -> dict[str, Any]:
-    project = await _get_project(db, project_id)
-
-    # Walk the project into a state production can legally start from. FAILED
-    # goes via NEEDS_REVISION because the state machine has no FAILED->RENDERING
-    # edge: a failed render is retriaged, not silently retried.
-    if project.status == ProjectStatus.SCRIPT_APPROVED:
-        await transition(db, project, ProjectStatus.PRODUCTION_PLANNING,
-                         actor="HUMAN", reason="Production requested")
-    elif project.status == ProjectStatus.FAILED:
-        await transition(db, project, ProjectStatus.NEEDS_REVISION,
-                         actor="HUMAN", reason="Retrying after failure")
-        await transition(db, project, ProjectStatus.RENDERING,
-                         actor="HUMAN", reason="Retrying production")
-    elif project.status == ProjectStatus.NEEDS_REVISION:
-        await transition(db, project, ProjectStatus.RENDERING,
-                         actor="HUMAN", reason="Retrying production")
-
-    # A planned experiment follows the existing production queue.  This hook
-    # records the lifecycle intent without changing rendering, QC, or quota
-    # behavior; the worker advances it after a successful production run.
-    await experiments.mark_in_production(db, project.id)
-
-    job_obj, created = await queue.enqueue(
-        db, "content.produce_video", {"project_id": str(project.id)}, project_id=project.id
+    experiment = (
+        await db.execute(
+            select(ContentExperiment)
+            .where(ContentExperiment.project_id == project_id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if experiment is None:
+        raise ConflictError("The project has no experiment to authorize production.")
+    project = await db.get(ContentProject, project_id, with_for_update=True)
+    if project is None:
+        raise NotFoundError(f"Project {project_id} not found")
+    script = await db.get(Script, project.current_script_id, with_for_update=True)
+    if script is None:
+        raise ConflictError("The project has no approved current script.")
+    job_obj, created = await production_lifecycle.authorize_production(
+        db, project=project, experiment=experiment, script=script
     )
     return {"job_id": str(job_obj.id), "created": created, "status": project.status}
 
@@ -356,6 +497,38 @@ async def approve_script(
             await transition(db, project, target, actor="HUMAN", reason="Phase 2 manual approval")
         except Exception:  # noqa: BLE001 - already past this step
             continue
+    return {"status": project.status}
+
+
+@router.post("/{project_id}/review-script", summary="Request revision or reject a script")
+async def review_script(
+    project_id: uuid.UUID,
+    body: dict[str, Any],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    project = await _get_project(db, project_id)
+    if project.status != ProjectStatus.SCRIPT_REVIEW:
+        raise ConflictError(f"Project is {project.status}; only SCRIPT_REVIEW can be reviewed")
+    decision = str(body.get("decision", "")).lower()
+    notes = str(body.get("notes") or "").strip()
+    if decision == "revise":
+        await transition(
+            db,
+            project,
+            ProjectStatus.NEEDS_REVISION,
+            actor="HUMAN",
+            reason=notes or "Script revision requested",
+        )
+    elif decision == "reject":
+        await transition(
+            db,
+            project,
+            ProjectStatus.REJECTED,
+            actor="HUMAN",
+            reason=notes or "Script rejected by reviewer",
+        )
+    else:
+        raise ValidationError("decision must be one of: revise, reject")
     return {"status": project.status}
 
 

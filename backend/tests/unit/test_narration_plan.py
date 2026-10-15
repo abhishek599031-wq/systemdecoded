@@ -8,10 +8,15 @@ then makes seven. These tests pin the count to the units that will be spoken.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
+from app.config import settings
 from app.core.errors import TerminalError
+from app.providers.base import VoiceSpec
 from app.services.narration_plan import build_narration_plan
+from app.services.production import build_plan_for
 
 
 class FakeScene:
@@ -107,3 +112,18 @@ def test_plan_is_immutable():
     plan = _plan()
     with pytest.raises((AttributeError, TypeError)):
         plan.blocks = ()  # type: ignore[misc]
+
+
+def test_production_plan_records_the_configured_chatterbox_model():
+    script = SimpleNamespace(scenes=SCENES)
+    provider = SimpleNamespace(
+        primary_name="chatterbox",
+        name="resilient",
+        prefers_whole_block=True,
+    )
+
+    plan = build_plan_for(script, provider, VoiceSpec(voice="builtin-default"))
+
+    assert plan.provider == "chatterbox"
+    assert plan.model == settings.CHATTERBOX_MODEL
+    assert plan.request_count == 5

@@ -47,6 +47,7 @@ from app.models.enums import (
 )
 from app.models.experiments import ContentExperiment
 from app.models.job import BackgroundJob, JobEvent
+from app.models.planner import ContentProposal, PlannerRun
 from app.models.quota import ProviderQuotaUsage
 from app.models.youtube import OAuthState, YouTubeConnection
 
@@ -65,6 +66,7 @@ __all__ = [
     "ContentExperiment",
     "ContentFeatureProfile",
     "ContentProject",
+    "ContentProposal",
     "ExperimentComparisonStatus",
     "ExperimentStatus",
     "FeatureProvenance",
@@ -73,6 +75,7 @@ __all__ = [
     "JobEventType",
     "JobStatus",
     "OAuthState",
+    "PlannerRun",
     "ProductionAsset",
     "ProjectStatus",
     "ProjectTransition",

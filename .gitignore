@@ -49,11 +49,13 @@ next-env.d.ts
 media/renders/*
 media/cache/*
 media/assets/*
+media/proofs/*
 # Local auditions and renderer proofs are review artifacts, not fixtures.
 media/pocs/
 !media/renders/.gitkeep
 !media/cache/.gitkeep
 !media/assets/.gitkeep
+!media/proofs/.gitkeep
 
 # ------------------------------------------------------------------- misc ---
 # Local POC virtual environments/model caches are never source files.

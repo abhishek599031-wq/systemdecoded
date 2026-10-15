@@ -6,7 +6,7 @@ either way (ARCH §5.3).
 
 The central rule:
 
-    Transient provider failure  ->  retry, then fall back to Kokoro.
+    Transient provider failure  ->  retry, then use an explicitly configured fallback.
     Configuration / our own bug ->  surface immediately, never fall back.
 
 That split is the whole point. Falling back on a missing API key or a bad voice
@@ -17,6 +17,7 @@ listening. `TerminalError` is therefore never caught here.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -26,7 +27,7 @@ from app.core.errors import QuotaExhaustedError, RetryableError, TerminalError
 from app.core.logging import get_logger
 from app.providers.base import AudioResult, TTSProvider, VoiceSpec
 from app.providers.tts.chatterbox import ChatterboxOriginalTTS, ChatterboxTurboTTS
-from app.providers.tts.gemini import GeminiTTS, sleep_backoff
+from app.providers.tts.gemini import GeminiTTS
 from app.providers.tts.kokoro import KokoroTTS
 
 log = get_logger("tts.resolver")
@@ -35,6 +36,21 @@ log = get_logger("tts.resolver")
 # from "caller explicitly wants no fallback". Plain None cannot express both,
 # and conflating them silently constructs a provider the caller did not ask for.
 _UNSET: Any = object()
+
+
+async def sleep_backoff(
+    attempt: int, base: float = 5.0, error: Exception | None = None
+) -> None:
+    """Provider-neutral retry delay used by the resolver."""
+    asked = getattr(error, "retry_after", None)
+    wait = min(float(asked) + 1.0, 70.0) if asked else min(base * (3 ** (attempt - 1)), 65.0)
+    log.info(
+        "tts.backoff",
+        attempt=attempt,
+        wait_seconds=round(wait, 1),
+        asked_by_server=bool(asked),
+    )
+    await asyncio.sleep(wait)
 
 
 def build_provider(name: str) -> TTSProvider:

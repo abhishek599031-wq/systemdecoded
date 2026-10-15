@@ -19,23 +19,32 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Media production stack (Phase 2). Kept optional so the api/scheduler images
-# stay slim — only the worker needs these (ARCH §15.2).
-#
-# kokoro-onnx rather than the `kokoro` package: the latter pulls in torch
-# (~2GB), while onnxruntime runs the same 82M model faster on CPU.
+# Provider-neutral media production stack. Kept optional so the API and
+# scheduler images stay slim; only the worker needs it (ARCH §15.2).
 media = [
-    "kokoro-onnx>=0.4.9",
-    "onnxruntime>=1.20",
     "faster-whisper>=1.1",
+    # faster-whisper 1.2.1 passes metadata_errors to av.open; PyAV 19 removed
+    # that keyword. Remove this cap after a faster-whisper release includes
+    # upstream fix 2ce7f9d.
+    "av>=11,<19",
     "playwright>=1.49",
     "soundfile>=0.12",
     "numpy>=1.26",
 ]
-# Experimental local GPU TTS. Kept separate from `media` so the production
-# worker does not acquire a multi-gigabyte torch/CUDA stack until approved.
+# Retained for legacy/isolated Kokoro environments. Current kokoro-onnx needs
+# NumPy 2.x, while Chatterbox needs NumPy <2, so these providers must not be
+# installed into the same worker environment.
+kokoro = [
+    "kokoro-onnx>=0.4.9",
+    "onnxruntime>=1.20",
+]
+# Approved local GPU narrator for the production worker.
 chatterbox = [
     "chatterbox-tts==0.1.7",
+    # PyPI resemble-perth 1.0.1 still imports pkg_resources, which setuptools
+    # 81+ removed. This immutable upstream 1.1.0 revision contains the verified
+    # importlib.resources repair and compatible torch>=2.1 metadata.
+    "resemble-perth @ git+https://github.com/resemble-ai/Perth.git@ff1c8ac55a976971245cdd53c18d6131ca00d993",
 ]
 dev = [
     "pytest>=8.3",

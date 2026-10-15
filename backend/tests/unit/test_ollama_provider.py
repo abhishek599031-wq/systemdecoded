@@ -83,10 +83,13 @@ async def test_structured_generation_uses_pydantic_validation() -> None:
 @pytest.mark.asyncio
 async def test_malformed_json_is_retried_once_and_then_validated() -> None:
     attempts = 0
+    repair_prompt = ""
 
-    async def handler(_: httpx.Request) -> httpx.Response:
-        nonlocal attempts
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts, repair_prompt
         attempts += 1
+        if attempts == 2:
+            repair_prompt = json.loads(request.content)["prompt"]
         return _success("not JSON" if attempts == 1 else '{"topic":"DNS","duplicate":true}')
 
     async with _client(httpx.MockTransport(handler)) as client:
@@ -97,6 +100,34 @@ async def test_malformed_json_is_retried_once_and_then_validated() -> None:
     assert attempts == 2
     assert result.attempts == 2
     assert result.value.duplicate is True
+    assert "Validation errors:" in repair_prompt
+    assert "json_invalid" in repair_prompt
+
+
+@pytest.mark.asyncio
+async def test_structured_generation_can_recover_on_second_informed_repair() -> None:
+    attempts = 0
+    prompts: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        prompts.append(json.loads(request.content)["prompt"])
+        if attempts == 1:
+            return _success('{"topic":7}')
+        if attempts == 2:
+            return _success('{"topic":"DNS"}')
+        return _success('{"topic":"DNS","duplicate":false}')
+
+    async with _client(httpx.MockTransport(handler)) as client:
+        result = await OllamaLLM(
+            base_url="http://ollama.test", max_attempts=3, client=client
+        ).generate_structured("return JSON", Answer)
+
+    assert attempts == 3
+    assert result.attempts == 3
+    assert "topic" in prompts[1]
+    assert "duplicate" in prompts[2]
 
 
 @pytest.mark.asyncio
@@ -110,6 +141,8 @@ async def test_malformed_json_fails_after_bounded_retries_without_coercion() -> 
             await provider.generate_structured("return JSON", Answer)
 
     assert len(exc_info.value.raw_responses) == 2
+    assert exc_info.value.validation_errors
+    assert "topic" in str(exc_info.value)
 
 
 @pytest.mark.asyncio

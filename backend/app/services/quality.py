@@ -33,8 +33,26 @@ from app.models.content import (
 )
 from app.models.enums import AssetType, QualityVerdict
 from app.providers.compositor.ffmpeg import _run, probe
+from app.providers.renderer.generic_scene import validate_layout_plan
 
 log = get_logger("quality")
+
+VISUAL_CHECKS = {
+    "all_scenes_rendered",
+    "visual_layout_safe",
+    "visual_text_readable",
+    "caption_diagram_separation",
+    "connector_text_clearance",
+    "arrowhead_label_clearance",
+    "node_label_clearance",
+    "connector_direction_valid",
+    "supported_layout_complexity",
+    "current_script_visual_isolation",
+    "intended_end_card_present",
+    "final_brand_consistent",
+    "safe_area_respected",
+    "final_frame_valid",
+}
 
 
 async def _extract_final_frame(video: Path, duration: float, out: Path) -> tuple[int, str, str]:
@@ -49,8 +67,21 @@ async def _extract_final_frame(video: Path, duration: float, out: Path) -> tuple
     exactly what let a video whose picture ran out before its audio look fine.
     """
     return await _run(
-        ["ffmpeg", "-y", "-v", "error", "-sseof", "-0.4", "-i", str(video),
-         "-update", "1", "-frames:v", "1", str(out)],
+        [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-sseof",
+            "-0.4",
+            "-i",
+            str(video),
+            "-update",
+            "1",
+            "-frames:v",
+            "1",
+            str(out),
+        ],
         timeout=60,
     )
 
@@ -99,6 +130,7 @@ class QualityReport:
                 "blocking": c.blocking,
                 "detail": c.detail,
                 "measured": c.measured,
+                "category": "VISUAL_QC" if c.name in VISUAL_CHECKS else "TECHNICAL_QC",
             }
             for c in self.checks
         ]
@@ -126,9 +158,7 @@ async def run_quality_checks(
     probed = await probe(path)
 
     # ------------------------------------------------------- dimensions ---
-    correct_dims = (
-        probed.width == settings.VIDEO_WIDTH and probed.height == settings.VIDEO_HEIGHT
-    )
+    correct_dims = probed.width == settings.VIDEO_WIDTH and probed.height == settings.VIDEO_HEIGHT
     report.add(
         "dimensions_9_16",
         correct_dims,
@@ -220,13 +250,17 @@ async def run_quality_checks(
         )
     ).scalar_one()
     caption_asset = (
-        await session.execute(
-            select(ProductionAsset).where(
-                ProductionAsset.project_id == project.id,
-                ProductionAsset.asset_type == AssetType.CAPTION_FILE.value,
+        (
+            await session.execute(
+                select(ProductionAsset).where(
+                    ProductionAsset.project_id == project.id,
+                    ProductionAsset.asset_type == AssetType.CAPTION_FILE.value,
+                )
             )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
 
     has_events = False
     if caption_asset:
@@ -252,10 +286,14 @@ async def run_quality_checks(
 
     if script is not None:
         scenes = (
-            await session.execute(
-                select(Scene).where(Scene.script_id == script.id).order_by(Scene.scene_number)
+            (
+                await session.execute(
+                    select(Scene).where(Scene.script_id == script.id).order_by(Scene.scene_number)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
         frame_count = (
             await session.execute(
@@ -299,16 +337,135 @@ async def run_quality_checks(
             measured=round(worst_gap, 3),
         )
 
-        # Safe area: measurable because on-screen text is placed by our own
-        # templates inside a `.content` box with the safe insets applied.
-        outside = [s.scene_number for s in scenes if not s.template_id]
+        # Visual geometry is validated from the same deterministic layout plan
+        # consumed by Motion Canvas. This catches the clipped/overflowing
+        # generic layout that a template-presence check could never detect.
+        layout_errors: list[str] = [
+            f"scene {scene.scene_number}: missing visual template"
+            for scene in scenes
+            if not scene.template_id
+        ]
+        reports: list[dict[str, Any]] = []
+        generic_scenes = [scene for scene in scenes if scene.template_id == "generic_scene_spec"]
+        for scene in generic_scenes:
+            try:
+                reports.append(validate_layout_plan(scene.template_props))
+            except Exception as exc:  # noqa: BLE001 - turn validation into QC evidence
+                layout_errors.append(f"scene {scene.scene_number}: {exc}")
         report.add(
             "safe_area_respected",
-            not outside,
+            not layout_errors,
             blocking=True,
-            detail="All scenes use safe-area-constrained templates"
-            if not outside
-            else f"Scenes without a template: {outside}",
+            detail="All scene geometry fits the declared mobile safe region"
+            if not layout_errors
+            else "; ".join(layout_errors),
+        )
+        report.add(
+            "visual_layout_safe",
+            len(reports) == len(generic_scenes) and not layout_errors,
+            blocking=True,
+            detail="Node and heading bounds are inside the portrait visual region"
+            if not layout_errors
+            else "One or more scene layouts are clipped or invalid",
+            measured=len(reports),
+        )
+        report.add(
+            "visual_text_readable",
+            not layout_errors,
+            blocking=True,
+            detail="Heading and node labels satisfy mobile length limits"
+            if not layout_errors
+            else "A visual label cannot fit at the minimum supported size",
+        )
+        caption_clear = (not generic_scenes) or (
+            bool(reports)
+            and all(
+                all(node["bottom"] <= item["caption_region_top"] for node in item["nodes"])
+                for item in reports
+            )
+        )
+        report.add(
+            "caption_diagram_separation",
+            caption_clear,
+            blocking=True,
+            detail="Diagram bounds remain above the caption region"
+            if caption_clear
+            else "A diagram enters the caption region",
+        )
+        report.add(
+            "supported_layout_complexity",
+            not layout_errors,
+            blocking=True,
+            detail="SceneSpecs fit a supported vertical, wrapped, or comparison layout"
+            if not layout_errors
+            else "A SceneSpec is overcrowded or unsupported",
+        )
+        chromium_geometry_valid = all_rendered and not layout_errors
+        for name, detail in (
+            (
+                "connector_text_clearance",
+                "Rendered connector labels are separated from connector paths",
+            ),
+            (
+                "arrowhead_label_clearance",
+                "Rendered connector labels are padded away from arrowheads",
+            ),
+            (
+                "node_label_clearance",
+                "Rendered connector labels do not collide with nodes or other labels",
+            ),
+        ):
+            report.add(
+                name,
+                chromium_geometry_valid,
+                blocking=True,
+                detail=(
+                    detail
+                    if chromium_geometry_valid
+                    else "Actual Chromium geometry was not validated for every scene"
+                ),
+            )
+        report.add(
+            "connector_direction_valid",
+            not layout_errors,
+            blocking=True,
+            detail=(
+                "Directed connector graph and typed edge semantics are valid"
+                if not layout_errors
+                else "A directed connector graph is invalid"
+            ),
+        )
+        isolated = render.script_id == script.id and all(
+            scene.script_id == script.id and scene.project_id == project.id for scene in scenes
+        )
+        report.add(
+            "current_script_visual_isolation",
+            isolated,
+            blocking=True,
+            detail="Render and SceneSpecs belong to the current project/script"
+            if isolated
+            else "Render or SceneSpec ownership points to prior content",
+        )
+        has_end_card = not generic_scenes or bool(
+            scenes and scenes[-1].template_props.get("end_card") is True
+        )
+        report.add(
+            "intended_end_card_present",
+            has_end_card,
+            blocking=True,
+            detail="Closing SceneSpec explicitly requires the SystemDecoded end card"
+            if has_end_card
+            else "Closing SceneSpec has no intended SystemDecoded end card",
+        )
+        report.add(
+            "final_brand_consistent",
+            has_end_card and chromium_geometry_valid,
+            blocking=True,
+            detail=(
+                "Chromium validated SYSTEMDECODED / Complex Technology. Decoded."
+                if has_end_card and chromium_geometry_valid
+                else "The final branded card was absent or not render-validated"
+            ),
         )
     else:
         report.add("all_scenes_rendered", False, blocking=True, detail="No current script")

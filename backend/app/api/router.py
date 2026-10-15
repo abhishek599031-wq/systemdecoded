@@ -8,6 +8,7 @@ from app.api.routes import (
     content_intelligence,
     experiments,
     jobs,
+    planner,
     projects,
     system,
     youtube,
@@ -22,3 +23,4 @@ api_router.include_router(youtube.router)
 api_router.include_router(analytics.router)
 api_router.include_router(content_intelligence.router)
 api_router.include_router(experiments.router)
+api_router.include_router(planner.router)

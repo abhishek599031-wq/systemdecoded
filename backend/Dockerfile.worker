@@ -26,6 +26,7 @@ RUN apt-get update \
         espeak-ng \
         procps \
         curl \
+        git \
         fonts-dejavu-core \
         fonts-liberation2 \
     && rm -rf /var/lib/apt/lists/*
@@ -34,13 +35,13 @@ WORKDIR /app
 
 COPY pyproject.toml ./
 RUN mkdir -p app && touch app/__init__.py \
-    && pip install --no-cache-dir -e ".[dev,media]"
+    && pip install --no-cache-dir -e ".[dev,media,chatterbox]"
 
 # Chromium only — we never drive Firefox or WebKit.
 RUN playwright install --with-deps chromium
 
 COPY . .
-RUN pip install --no-cache-dir -e ".[dev,media]"
+RUN pip install --no-cache-dir -e ".[dev,media,chatterbox]"
 
 RUN useradd --create-home --uid 1000 appuser \
     && mkdir -p /media \

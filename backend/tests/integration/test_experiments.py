@@ -11,7 +11,7 @@ from sqlalchemy import select
 from app.core.errors import ConflictError, ValidationError
 from app.models.analytics import YouTubeVideoWindowMetric
 from app.models.channel import Channel
-from app.models.content import ContentProject, PublishedVideo
+from app.models.content import ContentProject, PublishedVideo, Script
 from app.models.content_intelligence import ContentFeatureProfile
 from app.models.enums import (
     AnalyticsWindowStatus,
@@ -19,6 +19,7 @@ from app.models.enums import (
     ProjectStatus,
 )
 from app.models.experiments import ContentExperiment
+from app.models.job import BackgroundJob
 from app.schemas.experiments import ExperimentCreate, ExperimentPatch
 from app.services import experiments
 
@@ -246,9 +247,57 @@ async def test_launch_requires_script_approval_and_never_touches_tts(session) ->
     experiment = await experiments.create_experiment(session, _body())
     await experiments.plan_experiment(session, experiment.id)
     # Planning only changes intent rows; no background job or quota usage is created.
-    from app.models.job import BackgroundJob
-
     jobs = await session.scalar(
         select(BackgroundJob).where(BackgroundJob.project_id == experiment.project_id)
     )
     assert jobs is None
+
+
+async def test_launch_is_a_separate_idempotent_human_action(client, session) -> None:
+    experiment = await experiments.create_experiment(session, _body())
+    project = await session.get(ContentProject, experiment.project_id)
+    assert project is not None
+    script = Script(
+        project_id=project.id,
+        version=1,
+        is_current=True,
+        narration="An approved script.",
+        authoring_mode="ai",
+        word_count=3,
+    )
+    session.add(script)
+    await session.flush()
+    project.current_script_id = script.id
+    project.status = ProjectStatus.SCRIPT_APPROVED.value
+    await session.commit()
+
+    blocked = await client.post(f"/api/v1/experiments/{experiment.id}/launch")
+    assert blocked.status_code == 409
+    assert "cannot start production" in blocked.json()["error"]["message"]
+
+    planned = await client.post(f"/api/v1/experiments/{experiment.id}/plan")
+    assert planned.status_code == 200
+    assert planned.json()["locked_at"] is not None
+
+    first = await client.post(f"/api/v1/experiments/{experiment.id}/launch")
+    second = await client.post(f"/api/v1/experiments/{experiment.id}/launch")
+    assert first.status_code == second.status_code == 200
+    assert first.json()["created"] is True
+    assert second.json()["created"] is False
+    assert first.json()["job_id"] == second.json()["job_id"]
+    assert first.json()["experiment_status"] == ExperimentStatus.IN_PRODUCTION.value
+    assert first.json()["project_status"] == ProjectStatus.PRODUCTION_PLANNING.value
+
+    detail = await client.get(f"/api/v1/projects/{project.id}")
+    assert detail.status_code == 200
+    assert detail.json()["production_job"]["id"] == first.json()["job_id"]
+    assert detail.json()["production_job"]["status"] == "QUEUED"
+    assert detail.json()["production_job"]["script_id"] == str(script.id)
+    assert detail.json()["production"]["production_required"] is True
+
+    jobs = (
+        await session.execute(
+            select(BackgroundJob).where(BackgroundJob.project_id == project.id)
+        )
+    ).scalars().all()
+    assert len(jobs) == 1

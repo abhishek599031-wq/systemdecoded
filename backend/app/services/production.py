@@ -60,6 +60,7 @@ from app.providers.base import (
 )
 from app.providers.compositor import captions as caption_builder
 from app.providers.compositor.ffmpeg import FFmpegCompositor
+from app.providers.renderer.generic_scene import build_generic_runtime_props
 from app.providers.renderer.playwright_frames import PlaywrightFrameRenderer
 from app.providers.renderer.scene_contract import build_scene_spec, payload_digest
 from app.providers.tts.resolver import ResilientTTS, build_provider, voice_for
@@ -126,6 +127,11 @@ class SceneAudio:
 
 def project_dir(project_id: uuid.UUID) -> Path:
     return settings.MEDIA_ROOT / "renders" / str(project_id)
+
+
+def revision_dir(project_id: uuid.UUID, script_id: uuid.UUID) -> Path:
+    """Workspace for one immutable script revision."""
+    return project_dir(project_id) / "revisions" / str(script_id)
 
 
 def _checksum(path: Path) -> str:
@@ -256,12 +262,18 @@ async def _prepare_block(path: Path) -> float:
 
 def build_plan_for(script: Script, tts, voice: VoiceSpec) -> NarrationPlan:
     """The narration plan for a script, as a given provider would speak it."""
+    provider = getattr(tts, "primary_name", None) or getattr(tts, "name", "unknown")
+    model = {
+        "gemini": settings.GEMINI_TTS_MODEL,
+        "chatterbox": settings.CHATTERBOX_MODEL,
+        "chatterbox-turbo": settings.CHATTERBOX_TURBO_MODEL,
+    }.get(provider)
     return build_narration_plan(
         list(script.scenes),
         whole_block=getattr(tts, "prefers_whole_block", False),
-        provider=getattr(tts, "primary_name", None) or getattr(tts, "name", "unknown"),
+        provider=provider,
         voice=voice.voice,
-        model=settings.GEMINI_TTS_MODEL if settings.TTS_PROVIDER == "gemini" else None,
+        model=model,
     )
 
 
@@ -327,7 +339,7 @@ async def synthesize_narration(
     # has one narrator either way. `TerminalError` still propagates untouched:
     # a configuration mistake must not be answered by switching provider.
     try:
-        return await _synthesize_blocks(session, project, plan, primary, voice)
+        return await _synthesize_blocks(session, project, script, plan, primary, voice)
     except QuotaExhaustedError as exc:
         # Not a transient failure, and not something a fallback should paper
         # over. The chosen voice is part of the deliverable; quietly producing
@@ -360,7 +372,7 @@ async def synthesize_narration(
         )
         fallback_plan = build_plan_for(script, fallback, voice_for(settings.TTS_FALLBACK_PROVIDER))
         return await _synthesize_blocks(
-            session, project, fallback_plan, fallback,
+            session, project, script, fallback_plan, fallback,
             voice_for(settings.TTS_FALLBACK_PROVIDER),
             fallback_from=settings.TTS_PROVIDER,
             fallback_reason=str(exc)[:300],
@@ -370,6 +382,7 @@ async def synthesize_narration(
 async def _synthesize_blocks(
     session: AsyncSession,
     project: ContentProject,
+    script: Script,
     plan: NarrationPlan,
     tts,
     voice: VoiceSpec,
@@ -384,7 +397,7 @@ async def _synthesize_blocks(
     decision gets made.
     """
     whole_block = plan.whole_block
-    out_dir = project_dir(project.id) / "audio"
+    out_dir = revision_dir(project.id, script.id) / "audio"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     results: list[SceneAudio] = []
@@ -499,7 +512,7 @@ async def concat_narration(
     Trailing silence matches the closing visual hold, so the audio does not run
     out before the picture resolves.
     """
-    out_dir = project_dir(project.id) / "audio"
+    out_dir = revision_dir(project.id, parts[0].scene.script_id) / "audio"
     combined = out_dir / "narration.wav"
 
     flat: list[SegmentAudio] = []
@@ -614,7 +627,10 @@ async def align_narration(
 
 
 async def build_captions(
-    session: AsyncSession, project: ContentProject, aligned: AlignedNarration
+    session: AsyncSession,
+    project: ContentProject,
+    script: Script,
+    aligned: AlignedNarration,
 ) -> Path:
     """Write captions from the approved script's own words.
 
@@ -623,7 +639,7 @@ async def build_captions(
     alignment quality is stored alongside so a caption file can be traced back
     to how much of it was measured rather than interpolated.
     """
-    ass_path = project_dir(project.id) / "captions.ass"
+    ass_path = revision_dir(project.id, script.id) / "captions.ass"
     ass_path.parent.mkdir(parents=True, exist_ok=True)
     ass_path.write_text(
         caption_builder.build_ass(
@@ -644,27 +660,42 @@ async def build_captions(
 
 # ----------------------------------------------------------------- visuals ---
 async def render_scenes(
-    session: AsyncSession, project: ContentProject, parts: list[SceneAudio]
+    session: AsyncSession,
+    project: ContentProject,
+    parts: list[SceneAudio],
+    aligned: AlignedNarration,
+    *,
+    script: Script | None = None,
 ) -> dict[int, list[Path]]:
     """Render every scene as a real frame sequence at the output frame rate.
 
     Durations come from the measured narration, so the animation in each scene
     is paced to what is actually being said rather than to a guess.
     """
-    out_dir = project_dir(project.id) / "frames"
+    out_dir = revision_dir(project.id, script.id) / "frames"
     out_dir.mkdir(parents=True, exist_ok=True)
     rendered: dict[int, list[Path]] = {}
-    script = await current_script(session, project)
+    script = script or await current_script(session, project)
 
     async with PlaywrightFrameRenderer(fps=settings.VIDEO_FPS) as renderer:
         for part in parts:
             scene = part.scene
+            runtime_props = None
+            if scene.template_id == "generic_scene_spec":
+                runtime_props = build_generic_runtime_props(
+                    scene,
+                    words=aligned.words,
+                    scene_start=part.start,
+                    speech_duration=part.duration,
+                    visual_duration=part.visual_duration,
+                )
             spec = build_scene_spec(
                 project,
                 script,
                 scene,
                 width=settings.VIDEO_WIDTH,
                 height=settings.VIDEO_HEIGHT,
+                runtime_props=runtime_props,
             )
             result = await renderer.render(spec, out_dir, duration=part.visual_duration)
             rendered[scene.scene_number] = result.frames
@@ -705,7 +736,9 @@ def build_sfx_cues(project: ContentProject, parts: list[SceneAudio]) -> list[dic
     # not require the media stack (ARCH §15.2).
     from app.services import sfx
 
-    library = sfx.build_library(project_dir(project.id) / "audio")
+    library = sfx.build_library(
+        revision_dir(project.id, parts[0].scene.script_id) / "audio"
+    )
     cues: list[dict] = []
     for part in parts:
         spec = (part.scene.template_props or {}).get("sfx")
@@ -721,6 +754,18 @@ def build_sfx_cues(project: ContentProject, parts: list[SceneAudio]) -> list[dic
 
 
 # ------------------------------------------------------------------ render ---
+def render_output_path(
+    project: ContentProject, script: Script, render: VideoRender
+) -> Path:
+    """Return an immutable, revision-specific path for a final render."""
+    return (
+        project_dir(project.id)
+        / "renders"
+        / f"script_{script.id}"
+        / f"systemdecoded_{project.id.hex[:8]}_v{script.version}_{render.id.hex[:8]}.mp4"
+    )
+
+
 async def compose_video(
     session: AsyncSession,
     project: ContentProject,
@@ -741,7 +786,11 @@ async def compose_video(
     session.add(render)
     await session.flush()
 
-    output = project_dir(project.id) / f"systemdecoded_{project.id.hex[:8]}.mp4"
+    # A render is immutable evidence for one script revision. Never reuse the
+    # project-level filename: a revised production must not overwrite the
+    # previously reviewed/rejected artifact.
+    output = render_output_path(project, script, render)
+    output.parent.mkdir(parents=True, exist_ok=True)
     comp_scenes = [
         CompositionScene(
             scene_number=p.scene.scene_number,
@@ -856,9 +905,18 @@ async def current_script(session: AsyncSession, project: ContentProject) -> Scri
     return script
 
 
-async def produce(session: AsyncSession, project: ContentProject) -> VideoRender:
-    """Run the whole pipeline for a project's current script."""
-    script = await current_script(session, project)
+async def produce(
+    session: AsyncSession,
+    project: ContentProject,
+    *,
+    script: Script | None = None,
+) -> VideoRender:
+    """Run the pipeline for the immutable revision authorized by its job."""
+    script = script or await current_script(session, project)
+    if project.current_script_id != script.id or not script.is_current:
+        raise TerminalError(
+            f"Script v{script.version} is no longer the project's approved current revision."
+        )
 
     # Quota preflight, before anything is generated.
     #
@@ -876,15 +934,15 @@ async def produce(session: AsyncSession, project: ContentProject) -> VideoRender
 
     # A clean slate per run: stale frames from a previous attempt silently
     # ending up in a new video is a genuinely confusing failure.
-    work = project_dir(project.id)
+    work = revision_dir(project.id, script.id)
     if work.exists():
         shutil.rmtree(work / "_work", ignore_errors=True)
 
     parts = await synthesize_narration(session, project, script, plan=plan)
     narration = await concat_narration(session, project, parts)
     aligned = await align_narration(session, project, parts)
-    subtitles = await build_captions(session, project, aligned)
-    frames = await render_scenes(session, project, parts)
+    subtitles = await build_captions(session, project, script, aligned)
+    frames = await render_scenes(session, project, parts, aligned, script=script)
     return await compose_video(
         session, project, script, parts, frames, narration, subtitles, aligned
     )

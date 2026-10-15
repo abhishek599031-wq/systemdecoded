@@ -38,11 +38,17 @@ def _settings_kwargs(**overrides: object) -> Settings:
 # CORS_ORIGINS env var for the backend container, and real environment
 # variables outrank a dotenv file, so a dotenv-based test would silently assert
 # against the container's value rather than the one it wrote.
-def test_empty_worker_job_types_parses_to_empty_list(tmp_path: Path) -> None:
+def test_empty_worker_job_types_parses_to_empty_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("WORKER_JOB_TYPES", raising=False)
     assert _settings("WORKER_JOB_TYPES=\n", tmp_path).WORKER_JOB_TYPES == []
 
 
-def test_comma_separated_list_is_split(tmp_path: Path) -> None:
+def test_comma_separated_list_is_split(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("WORKER_JOB_TYPES", raising=False)
     settings = _settings("WORKER_JOB_TYPES=media.render, media.tts ,content.script\n", tmp_path)
     assert settings.WORKER_JOB_TYPES == ["media.render", "media.tts", "content.script"]
 
@@ -62,13 +68,16 @@ def test_single_value_becomes_a_one_item_list() -> None:
     ]
 
 
-def test_defaults_apply_when_absent(tmp_path: Path) -> None:
+def test_defaults_apply_when_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Only asserts fields the real process environment does not set.
 
     CORS_ORIGINS is deliberately excluded: docker-compose sets it for the
     backend container, and real env vars outrank dotenv, so asserting its
     default here would test the container's config rather than the default.
     """
+    monkeypatch.delenv("WORKER_JOB_TYPES", raising=False)
     settings = _settings("APP_NAME=SystemDecoded\n", tmp_path)
     assert settings.WORKER_JOB_TYPES == []
 
@@ -81,7 +90,7 @@ def test_local_llm_defaults_are_bounded_and_need_no_api_key() -> None:
     assert settings.FAST_UTILITY_MODEL == "qwen3.5:4b"
     assert settings.FALLBACK_MODEL == "qwen3.5:9b"
     assert settings.LLM_CONTEXT_LIMIT == 8192
-    assert settings.LLM_TIMEOUT == 120.0
+    assert settings.LLM_TIMEOUT == 240.0
     assert not hasattr(settings, "OLLAMA_API_KEY")
 
 

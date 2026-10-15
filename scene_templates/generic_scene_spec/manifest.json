@@ -1,0 +1,17 @@
+{
+  "engine": "motion-canvas",
+  "schema_version": 1,
+  "required_props": [
+    "schema_version",
+    "visual_type",
+    "labels",
+    "nodes",
+    "connectors",
+    "timing_anchors",
+    "animation_intent",
+    "duration_seconds",
+    "speech_duration_seconds",
+    "timing",
+    "caption_safe_bottom"
+  ]
+}

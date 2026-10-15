@@ -43,12 +43,20 @@ class ResilientLLM:
 
 
 def get_planner_provider() -> ResilientLLM:
+    # Planning requires structured, user-visible facts rather than hidden
+    # chain-of-thought.  Disabling model thinking matches the evaluated local
+    # configuration and prevents it from spending the job budget on it.
+    def planner_model(model: str) -> LLMProvider:
+        if settings.LOCAL_LLM_PROVIDER == "ollama":
+            return OllamaLLM(model=model, think=False)
+        return build_provider(model=model)
+
     fallback = (
-        build_provider(model=settings.FALLBACK_MODEL)
+        planner_model(settings.FALLBACK_MODEL)
         if settings.FALLBACK_MODEL != settings.PRIMARY_PLANNER_MODEL
         else None
     )
-    return ResilientLLM(build_provider(model=settings.PRIMARY_PLANNER_MODEL), fallback)
+    return ResilientLLM(planner_model(settings.PRIMARY_PLANNER_MODEL), fallback)
 
 
 def get_fast_utility_provider() -> LLMProvider:

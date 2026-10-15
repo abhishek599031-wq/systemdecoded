@@ -23,7 +23,7 @@ import asyncio
 from pathlib import Path
 
 from app.config import settings
-from app.core.errors import RetryableError
+from app.core.errors import RetryableError, TerminalError
 from app.core.logging import get_logger
 from app.providers.base import AlignmentResult, WordTiming
 
@@ -107,6 +107,15 @@ class FasterWhisperAligner:
 
         try:
             words, duration = await asyncio.to_thread(_run)
+        except (ImportError, ModuleNotFoundError, TypeError) as exc:
+            log.exception(
+                "alignment.runtime_incompatible",
+                model=self.model_size,
+                error_type=type(exc).__name__,
+            )
+            raise TerminalError(
+                f"Alignment runtime is incompatible: {type(exc).__name__}: {exc}"
+            ) from exc
         except Exception as exc:
             raise RetryableError(f"Alignment failed: {exc}") from exc
 
